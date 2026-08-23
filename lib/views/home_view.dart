@@ -3,6 +3,8 @@ import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:projectapp/services/jarvis_ai_service.dart';
 import 'package:projectapp/views/add_refuel_view.dart';
 import 'package:projectapp/views/refuel_history_view.dart';
+import 'package:projectapp/views/vehicle_maintenances_view.dart';
+import 'package:projectapp/views/alert_preferences_view.dart';
 
 class HomeView extends StatefulWidget {
   const HomeView({super.key});
@@ -14,6 +16,9 @@ class HomeView extends StatefulWidget {
 class _HomeViewState extends State<HomeView> {
   Map<String, dynamic>? activeVehicle;
   List<Map<String, dynamic>> refuelsList = [];
+  List<Map<String, dynamic>> maintenancesList = [];
+  int thresholdKm = 1000;
+  int urgentAlertsCount = 0;
   String userName = 'Motorista';
   bool _isLoading = true;
 
@@ -22,7 +27,14 @@ class _HomeViewState extends State<HomeView> {
   String confidenceLabel = 'Dados Insuficientes';
   Color confidenceColor = Colors.grey;
 
-  String jarvisInsight = 'Jarvis analisando telemetria...';
+  JarvisInsightResult jarvisInsight = const JarvisInsightResult(
+    homeInsight: JarvisHomeInsight(
+      mensagemInvestigativa: 'Jarvis analisando telemetria e histórico...',
+    ),
+    modalStatus: JarvisModalStatus(
+      diagnosticoCurto: 'Analisando telemetria...',
+    ),
+  );
   bool _isJarvisLoading = true;
 
   @override
@@ -58,7 +70,24 @@ class _HomeViewState extends State<HomeView> {
           .eq('user_id', user.id)
           .maybeSingle();
 
-      // 2. Busca abastecimentos ordenados por odômetro crescente
+      // 2. Busca preferências de alertas para saber a margem de antecedência (default: 1000 km)
+      final alertPrefs = await Supabase.instance.client
+          .from('user_alert_preferences')
+          .select('mileage_threshold_km')
+          .eq('user_id', user.id)
+          .maybeSingle();
+      final threshold =
+          (alertPrefs?['mileage_threshold_km'] as num?)?.toInt() ?? 1000;
+
+      // 3. Busca manutenções preventivas cadastradas
+      final maintenancesData = await Supabase.instance.client
+          .from('vehicle_maintenances')
+          .select()
+          .eq('user_id', user.id)
+          .order('target_mileage', ascending: true);
+      final mList = List<Map<String, dynamic>>.from(maintenancesData);
+
+      // 4. Busca abastecimentos ordenados por odômetro crescente
       final refuelsData = await Supabase.instance.client
           .from('refuels')
           .select()
@@ -67,19 +96,36 @@ class _HomeViewState extends State<HomeView> {
 
       final list = List<Map<String, dynamic>>.from(refuelsData);
 
-      // 3. Cálculos dinâmicos da telemetria
+      // 5. Cálculos dinâmicos da telemetria
       _calculateMetrics(list);
+
+      // 6. Contabiliza alertas de manutenção pendentes/urgentes
+      final currentKm = (vehicleData?['mileage'] as num?)?.toInt() ?? 0;
+      int alertsCount = 0;
+      for (final m in mList) {
+        final isCompleted = m['is_completed'] as bool? ?? false;
+        if (!isCompleted) {
+          final targetKm = (m['target_mileage'] as num?)?.toInt() ?? 0;
+          final remainingKm = targetKm - currentKm;
+          if (remainingKm <= threshold) {
+            alertsCount++;
+          }
+        }
+      }
 
       if (mounted) {
         setState(() {
           activeVehicle = vehicleData;
           refuelsList = list;
+          maintenancesList = mList;
+          thresholdKm = threshold;
+          urgentAlertsCount = alertsCount;
           _isLoading = false;
         });
       }
 
-      // 4. Consulta a IA do Google Gemini em segundo plano
-      await _fetchJarvisInsight(vehicleData);
+      // 7. Consulta o Jarvis AI Copilot com o contexto do veículo e manutenções reais
+      await _fetchJarvisInsight(vehicleData, mList);
     } catch (error) {
       debugPrint('--- ERRO AO CARREGAR DADOS DO DASHBOARD: $error ---');
       if (mounted) {
@@ -91,7 +137,10 @@ class _HomeViewState extends State<HomeView> {
     }
   }
 
-  Future<void> _fetchJarvisInsight(Map<String, dynamic>? vehicle) async {
+  Future<void> _fetchJarvisInsight(
+    Map<String, dynamic>? vehicle,
+    List<Map<String, dynamic>> maintenances,
+  ) async {
     if (mounted) {
       setState(() {
         _isJarvisLoading = true;
@@ -108,6 +157,7 @@ class _HomeViewState extends State<HomeView> {
       mileage: mileage,
       averageConsumption: averageConsumption,
       monthlyExpenses: monthlyExpenses,
+      maintenances: maintenances,
     );
 
     if (mounted) {
@@ -186,6 +236,572 @@ class _HomeViewState extends State<HomeView> {
     );
   }
 
+  void _handleJarvisAction(String route) {
+    switch (route) {
+      case 'maintenance_form':
+      case 'maintenances':
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => const VehicleMaintenancesView(),
+          ),
+        ).then((_) => _fetchDashboardData());
+        break;
+      case 'refuel_form':
+      case 'refuel':
+        showAddRefuelBottomSheet(
+          context,
+          vehicle: activeVehicle,
+          onRefuelSaved: _fetchDashboardData,
+        );
+        break;
+      case 'alert_preferences':
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => const AlertPreferencesView(),
+          ),
+        ).then((_) => _fetchDashboardData());
+        break;
+      default:
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => const VehicleMaintenancesView(),
+          ),
+        ).then((_) => _fetchDashboardData());
+    }
+  }
+
+  IconData _getServiceIcon(String title) {
+    final lower = title.toLowerCase();
+    if (lower.contains('óleo') || lower.contains('oleo')) {
+      return Icons.opacity_rounded;
+    } else if (lower.contains('freio') || lower.contains('pastilha')) {
+      return Icons.album_outlined;
+    } else if (lower.contains('correia')) {
+      return Icons.settings_suggest_rounded;
+    } else if (lower.contains('filtro')) {
+      return Icons.filter_alt_outlined;
+    } else if (lower.contains('pneu') ||
+        lower.contains('alinhamento') ||
+        lower.contains('balanceamento')) {
+      return Icons.tire_repair_rounded;
+    } else if (lower.contains('vela')) {
+      return Icons.flash_on_rounded;
+    }
+    return Icons.build_circle_outlined;
+  }
+
+  void _showNotificationsSheet(BuildContext context) {
+    final theme = Theme.of(context);
+    final primaryColor = theme.colorScheme.primary;
+    final currentKm = (activeVehicle?['mileage'] as num?)?.toInt() ?? 0;
+
+    final pendingMaintenances = maintenancesList
+        .where((item) => !(item['is_completed'] as bool? ?? false))
+        .toList();
+
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: const Color(0xFF1A1B22),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(32)),
+      ),
+      builder: (sheetContext) {
+        return DraggableScrollableSheet(
+          initialChildSize: 0.72,
+          minChildSize: 0.45,
+          maxChildSize: 0.92,
+          expand: false,
+          builder: (scrollContext, scrollController) {
+            return Column(
+              children: [
+                const SizedBox(height: 12),
+                Center(
+                  child: Container(
+                    width: 44,
+                    height: 5,
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.2),
+                      borderRadius: BorderRadius.circular(3),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+
+                // Cabeçalho
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 24.0),
+                  child: Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          color: primaryColor.withValues(alpha: 0.15),
+                          shape: BoxShape.circle,
+                        ),
+                        child: Icon(
+                          Icons.notifications_active_rounded,
+                          color: primaryColor,
+                          size: 22,
+                        ),
+                      ),
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Central de Alertas',
+                              style: theme.textTheme.titleLarge?.copyWith(
+                                fontWeight: FontWeight.w800,
+                                color: Colors.white,
+                                letterSpacing: -0.5,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              urgentAlertsCount > 0
+                                  ? '$urgentAlertsCount aviso(s) requerem atenção'
+                                  : 'Tudo em dia com seu veículo',
+                              style: TextStyle(
+                                color: urgentAlertsCount > 0
+                                    ? Colors.amberAccent
+                                    : Colors.grey[400],
+                                fontSize: 12.5,
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      IconButton(
+                        onPressed: () => Navigator.pop(sheetContext),
+                        icon: Icon(
+                          Icons.close_rounded,
+                          color: Colors.grey[400],
+                          size: 22,
+                        ),
+                        splashRadius: 20,
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+                Divider(
+                  height: 1,
+                  color: Colors.white.withValues(alpha: 0.06),
+                ),
+
+                // Lista rolável
+                Expanded(
+                  child: ListView(
+                    controller: scrollController,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 24.0,
+                      vertical: 20.0,
+                    ),
+                    children: [
+                      // Status dos Sistemas (Jarvis - Leitura Rápida e Direta)
+                      Container(
+                        padding: const EdgeInsets.all(18),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF1E2028),
+                          borderRadius: BorderRadius.circular(20),
+                          border: Border.all(
+                            color: primaryColor.withValues(alpha: 0.25),
+                            width: 1,
+                          ),
+                        ),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.center,
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.all(10),
+                              decoration: BoxDecoration(
+                                color: primaryColor.withValues(alpha: 0.15),
+                                shape: BoxShape.circle,
+                              ),
+                              child: Icon(
+                                Icons.auto_awesome_rounded,
+                                size: 20,
+                                color: primaryColor,
+                              ),
+                            ),
+                            const SizedBox(width: 14),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    'STATUS DOS SISTEMAS (JARVIS)',
+                                    style: TextStyle(
+                                      color: primaryColor,
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w800,
+                                      letterSpacing: 0.6,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 4),
+                                  _isJarvisLoading
+                                      ? Row(
+                                          children: [
+                                            SizedBox(
+                                              width: 12,
+                                              height: 12,
+                                              child: CircularProgressIndicator(
+                                                strokeWidth: 2,
+                                                color: primaryColor,
+                                              ),
+                                            ),
+                                            const SizedBox(width: 8),
+                                            Text(
+                                              'Verificando telemetria...',
+                                              style: TextStyle(
+                                                color: Colors.grey[400],
+                                                fontSize: 13,
+                                                fontStyle: FontStyle.italic,
+                                              ),
+                                            ),
+                                          ],
+                                        )
+                                      : Text(
+                                          jarvisInsight.modalStatus.diagnosticoCurto,
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontSize: 14,
+                                            fontWeight: FontWeight.w600,
+                                            height: 1.35,
+                                          ),
+                                        ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 24),
+
+                      // Cabeçalho da Seção de Manutenções
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Text(
+                            'Alertas Mecânicos & Revisões',
+                            style: theme.textTheme.titleMedium?.copyWith(
+                              fontWeight: FontWeight.w700,
+                              color: Colors.white,
+                              letterSpacing: -0.2,
+                            ),
+                          ),
+                          if (pendingMaintenances.isNotEmpty)
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                                vertical: 3,
+                              ),
+                              decoration: BoxDecoration(
+                                color: urgentAlertsCount > 0
+                                    ? Colors.amber.withValues(alpha: 0.15)
+                                    : Colors.green.withValues(alpha: 0.15),
+                                borderRadius: BorderRadius.circular(12),
+                              ),
+                              child: Text(
+                                '${pendingMaintenances.length} ativa(s)',
+                                style: TextStyle(
+                                  color: urgentAlertsCount > 0
+                                      ? Colors.amberAccent
+                                      : Colors.greenAccent,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                      const SizedBox(height: 12),
+
+                      if (pendingMaintenances.isEmpty)
+                        Container(
+                          padding: const EdgeInsets.all(20),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF1E2028),
+                            borderRadius: BorderRadius.circular(20),
+                            border: Border.all(
+                              color: Colors.white.withValues(alpha: 0.05),
+                            ),
+                          ),
+                          child: Row(
+                            children: [
+                              Container(
+                                padding: const EdgeInsets.all(10),
+                                decoration: BoxDecoration(
+                                  color:
+                                      Colors.greenAccent.withValues(alpha: 0.12),
+                                  shape: BoxShape.circle,
+                                ),
+                                child: const Icon(
+                                  Icons.check_circle_outline_rounded,
+                                  color: Colors.greenAccent,
+                                  size: 24,
+                                ),
+                              ),
+                              const SizedBox(width: 14),
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                  children: [
+                                    const Text(
+                                      'Nenhuma revisão pendente',
+                                      style: TextStyle(
+                                        color: Colors.white,
+                                        fontWeight: FontWeight.bold,
+                                        fontSize: 14,
+                                      ),
+                                    ),
+                                    const SizedBox(height: 2),
+                                    Text(
+                                      'Todas as manutenções cadastradas estão em dia ou concluídas.',
+                                      style: TextStyle(
+                                        color: Colors.grey[400],
+                                        fontSize: 12,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                        )
+                      else
+                        ...pendingMaintenances.map((item) {
+                          final title =
+                              item['title'] as String? ?? 'Manutenção';
+                          final targetMileage =
+                              (item['target_mileage'] as num?)?.toInt() ?? 0;
+                          final remainingKm = targetMileage - currentKm;
+
+                          Color statusColor;
+                          String statusLabel;
+                          String detailLabel;
+                          IconData statusIcon;
+
+                          if (remainingKm <= 0) {
+                            statusColor = Colors.redAccent;
+                            statusLabel = 'Vencida';
+                            final overdueKm = remainingKm.abs();
+                            detailLabel = overdueKm == 0
+                                ? 'Limite de km atingido!'
+                                : 'Ultrapassou $overdueKm km!';
+                            statusIcon = Icons.error_outline_rounded;
+                          } else if (remainingKm <= thresholdKm) {
+                            statusColor = Colors.amberAccent;
+                            statusLabel = 'Próxima';
+                            detailLabel = 'Faltam apenas $remainingKm km';
+                            statusIcon = Icons.warning_amber_rounded;
+                          } else {
+                            statusColor = Colors.greenAccent;
+                            statusLabel = 'Em dia';
+                            detailLabel = 'Faltam $remainingKm km';
+                            statusIcon = Icons.shield_outlined;
+                          }
+
+                          final serviceIcon = _getServiceIcon(title);
+
+                          return InkWell(
+                            onTap: () {
+                              Navigator.pop(sheetContext);
+                              Navigator.push(
+                                context,
+                                MaterialPageRoute(
+                                  builder: (context) =>
+                                      const VehicleMaintenancesView(),
+                                ),
+                              ).then((_) => _fetchDashboardData());
+                            },
+                            borderRadius: BorderRadius.circular(18),
+                            child: Container(
+                              margin: const EdgeInsets.only(bottom: 10),
+                              padding: const EdgeInsets.all(14),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFF1E2028),
+                                borderRadius: BorderRadius.circular(18),
+                                border: Border.all(
+                                  color: statusColor.withValues(alpha: 0.25),
+                                  width: 1,
+                                ),
+                              ),
+                              child: Row(
+                                children: [
+                                  Container(
+                                    padding: const EdgeInsets.all(10),
+                                    decoration: BoxDecoration(
+                                      color:
+                                          statusColor.withValues(alpha: 0.12),
+                                      borderRadius: BorderRadius.circular(12),
+                                    ),
+                                    child: Icon(
+                                      serviceIcon,
+                                      size: 22,
+                                      color: statusColor,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Expanded(
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          title,
+                                          style: const TextStyle(
+                                            color: Colors.white,
+                                            fontWeight: FontWeight.bold,
+                                            fontSize: 14,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 4),
+                                        Row(
+                                          children: [
+                                            Container(
+                                              padding:
+                                                  const EdgeInsets.symmetric(
+                                                horizontal: 6,
+                                                vertical: 2,
+                                              ),
+                                              decoration: BoxDecoration(
+                                                color: statusColor
+                                                    .withValues(alpha: 0.15),
+                                                borderRadius:
+                                                    BorderRadius.circular(8),
+                                              ),
+                                              child: Row(
+                                                mainAxisSize:
+                                                    MainAxisSize.min,
+                                                children: [
+                                                  Icon(
+                                                    statusIcon,
+                                                    size: 11,
+                                                    color: statusColor,
+                                                  ),
+                                                  const SizedBox(width: 3),
+                                                  Text(
+                                                    statusLabel,
+                                                    style: TextStyle(
+                                                      color: statusColor,
+                                                      fontSize: 10,
+                                                      fontWeight:
+                                                          FontWeight.bold,
+                                                    ),
+                                                  ),
+                                                ],
+                                              ),
+                                            ),
+                                            const SizedBox(width: 8),
+                                            Expanded(
+                                              child: Text(
+                                                detailLabel,
+                                                style: TextStyle(
+                                                  color: Colors.grey[400],
+                                                  fontSize: 11.5,
+                                                ),
+                                                overflow: TextOverflow.ellipsis,
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                  Icon(
+                                    Icons.chevron_right_rounded,
+                                    color: Colors.grey[500],
+                                    size: 20,
+                                  ),
+                                ],
+                              ),
+                            ),
+                          );
+                        }),
+
+                      const SizedBox(height: 20),
+
+                      // Botão Principal: Ver Manutenções Preventivas
+                      SizedBox(
+                        height: 52,
+                        child: ElevatedButton.icon(
+                          onPressed: () {
+                            Navigator.pop(sheetContext);
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (context) =>
+                                    const VehicleMaintenancesView(),
+                              ),
+                            ).then((_) => _fetchDashboardData());
+                          },
+                          icon: const Icon(
+                            Icons.build_circle_rounded,
+                            color: Color(0xFF121316),
+                            size: 20,
+                          ),
+                          label: const Text('Ver Manutenções Preventivas'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: primaryColor,
+                            foregroundColor: const Color(0xFF121316),
+                            elevation: 0,
+                            shape: const StadiumBorder(),
+                            textStyle: const TextStyle(
+                              fontSize: 15,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+
+                      // Botão Secundário: Preferências de Alertas
+                      SizedBox(
+                        height: 48,
+                        child: TextButton.icon(
+                          onPressed: () {
+                            Navigator.pop(sheetContext);
+                            Navigator.push(
+                              context,
+                              MaterialPageRoute(
+                                builder: (context) =>
+                                    const AlertPreferencesView(),
+                              ),
+                            ).then((_) => _fetchDashboardData());
+                          },
+                          icon: Icon(
+                            Icons.tune_rounded,
+                            color: Colors.grey[300],
+                            size: 18,
+                          ),
+                          label: const Text(
+                            'Configurar Preferências de Alertas',
+                            style: TextStyle(
+                              color: Colors.grey,
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
   Widget _buildWelcomeHeader(ThemeData theme) {
     final vehicleTitle = activeVehicle != null
         ? '${activeVehicle!['brand']} ${activeVehicle!['model']}'
@@ -227,19 +843,54 @@ class _HomeViewState extends State<HomeView> {
             ),
           ],
         ),
-        Container(
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-            color: const Color(0xFF1E2028),
-            shape: BoxShape.circle,
-            border: Border.all(
-              color: Colors.white.withValues(alpha: 0.05),
+        Material(
+          color: const Color(0xFF1E2028),
+          shape: const CircleBorder(),
+          clipBehavior: Clip.antiAlias,
+          child: InkWell(
+            onTap: () => _showNotificationsSheet(context),
+            child: Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                border: Border.all(
+                  color: urgentAlertsCount > 0
+                      ? Colors.amberAccent.withValues(alpha: 0.4)
+                      : Colors.white.withValues(alpha: 0.05),
+                ),
+              ),
+              child: Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  Icon(
+                    urgentAlertsCount > 0
+                        ? Icons.notifications_active_rounded
+                        : Icons.notifications_none_rounded,
+                    color: urgentAlertsCount > 0
+                        ? theme.colorScheme.primary
+                        : Colors.grey[300],
+                    size: 22,
+                  ),
+                  if (urgentAlertsCount > 0)
+                    Positioned(
+                      right: -2,
+                      top: -2,
+                      child: Container(
+                        width: 9,
+                        height: 9,
+                        decoration: BoxDecoration(
+                          color: Colors.redAccent,
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                            color: const Color(0xFF1E2028),
+                            width: 1.5,
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
             ),
-          ),
-          child: Icon(
-            Icons.notifications_none_rounded,
-            color: Colors.grey[300],
-            size: 22,
           ),
         ),
       ],
@@ -326,7 +977,8 @@ class _HomeViewState extends State<HomeView> {
                 ],
               ),
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                 decoration: BoxDecoration(
                   color: confidenceColor.withValues(alpha: 0.15),
                   borderRadius: BorderRadius.circular(20),
@@ -425,6 +1077,10 @@ class _HomeViewState extends State<HomeView> {
   }
 
   Widget _buildJarvisInsightCard(ThemeData theme) {
+    final homeInsight = jarvisInsight.homeInsight;
+    final hasAction = homeInsight.textoBotaoAcao != null &&
+        homeInsight.textoBotaoAcao!.trim().isNotEmpty;
+
     return Container(
       padding: const EdgeInsets.all(22.0),
       decoration: BoxDecoration(
@@ -484,7 +1140,7 @@ class _HomeViewState extends State<HomeView> {
                     ),
                     const SizedBox(width: 12),
                     Text(
-                      'Jarvis analisando telemetria...',
+                      'Jarvis analisando telemetria e histórico...',
                       style: TextStyle(
                         color: Colors.grey[400],
                         fontSize: 14,
@@ -493,13 +1149,58 @@ class _HomeViewState extends State<HomeView> {
                     ),
                   ],
                 )
-              : Text(
-                  jarvisInsight,
-                  style: TextStyle(
-                    color: Colors.grey[300],
-                    fontSize: 14,
-                    height: 1.45,
-                  ),
+              : Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      homeInsight.mensagemInvestigativa,
+                      style: TextStyle(
+                        color: Colors.grey[300],
+                        fontSize: 14,
+                        height: 1.45,
+                      ),
+                    ),
+                    if (hasAction) ...[
+                      const SizedBox(height: 16),
+                      SizedBox(
+                        width: double.infinity,
+                        child: OutlinedButton.icon(
+                          onPressed: () => _handleJarvisAction(
+                            homeInsight.rotaAcaoSugerida ?? 'maintenance_form',
+                          ),
+                          icon: Icon(
+                            Icons.handyman_outlined,
+                            size: 18,
+                            color: theme.colorScheme.primary,
+                          ),
+                          label: Text(
+                            homeInsight.textoBotaoAcao!,
+                            style: TextStyle(
+                              color: theme.colorScheme.primary,
+                              fontWeight: FontWeight.bold,
+                              fontSize: 13.5,
+                            ),
+                          ),
+                          style: OutlinedButton.styleFrom(
+                            backgroundColor: theme.colorScheme.primary
+                                .withValues(alpha: 0.08),
+                            side: BorderSide(
+                              color: theme.colorScheme.primary
+                                  .withValues(alpha: 0.35),
+                              width: 1.2,
+                            ),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(16),
+                            ),
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 16,
+                              vertical: 12,
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
                 ),
         ],
       ),
@@ -612,7 +1313,8 @@ class _HomeViewState extends State<HomeView> {
                 backgroundColor: const Color(0xFF1E2028),
                 child: SingleChildScrollView(
                   physics: const AlwaysScrollableScrollPhysics(),
-                  padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 20.0),
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 24.0, vertical: 20.0),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
