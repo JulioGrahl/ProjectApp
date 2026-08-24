@@ -43,7 +43,7 @@ class _HomeViewState extends State<HomeView> {
     _fetchDashboardData();
   }
 
-  Future<void> _fetchDashboardData() async {
+  Future<void> _fetchDashboardData({bool forceRefresh = false}) async {
     final user = Supabase.instance.client.auth.currentUser;
     if (user == null) {
       if (mounted) {
@@ -124,8 +124,8 @@ class _HomeViewState extends State<HomeView> {
         });
       }
 
-      // 7. Consulta o Jarvis AI Copilot com o contexto do veículo e manutenções reais
-      await _fetchJarvisInsight(vehicleData, mList);
+      // 7. Consulta o Jarvis AI Copilot com cache inteligente
+      await _fetchJarvisInsight(vehicleData, mList, forceRefresh: forceRefresh);
     } catch (error) {
       debugPrint('--- ERRO AO CARREGAR DADOS DO DASHBOARD: $error ---');
       if (mounted) {
@@ -139,8 +139,9 @@ class _HomeViewState extends State<HomeView> {
 
   Future<void> _fetchJarvisInsight(
     Map<String, dynamic>? vehicle,
-    List<Map<String, dynamic>> maintenances,
-  ) async {
+    List<Map<String, dynamic>> maintenances, {
+    bool forceRefresh = false,
+  }) async {
     if (mounted) {
       setState(() {
         _isJarvisLoading = true;
@@ -158,6 +159,7 @@ class _HomeViewState extends State<HomeView> {
       averageConsumption: averageConsumption,
       monthlyExpenses: monthlyExpenses,
       maintenances: maintenances,
+      forceRefresh: forceRefresh,
     );
 
     if (mounted) {
@@ -1117,11 +1119,15 @@ class _HomeViewState extends State<HomeView> {
                 ),
               ),
               const SizedBox(width: 12),
-              Text(
-                'Dica do Jarvis',
-                style: theme.textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.w800,
-                  color: Colors.white,
+              Expanded(
+                child: Text(
+                  'Dica do Jarvis',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.titleMedium?.copyWith(
+                    fontWeight: FontWeight.w800,
+                    color: Colors.white,
+                  ),
                 ),
               ),
             ],
@@ -1139,12 +1145,16 @@ class _HomeViewState extends State<HomeView> {
                       ),
                     ),
                     const SizedBox(width: 12),
-                    Text(
-                      'Jarvis analisando telemetria e histórico...',
-                      style: TextStyle(
-                        color: Colors.grey[400],
-                        fontSize: 14,
-                        fontStyle: FontStyle.italic,
+                    Expanded(
+                      child: Text(
+                        'Jarvis analisando telemetria e histórico...',
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: Colors.grey[400],
+                          fontSize: 14,
+                          fontStyle: FontStyle.italic,
+                        ),
                       ),
                     ),
                   ],
@@ -1308,7 +1318,10 @@ class _HomeViewState extends State<HomeView> {
                 ),
               )
             : RefreshIndicator(
-                onRefresh: _fetchDashboardData,
+                onRefresh: () async {
+                  JarvisAiService.clearCache();
+                  await _fetchDashboardData(forceRefresh: true);
+                },
                 color: theme.colorScheme.primary,
                 backgroundColor: const Color(0xFF1E2028),
                 child: SingleChildScrollView(

@@ -85,6 +85,14 @@ class JarvisAiService {
   static const String _apiKey =
       String.fromEnvironment('GEMINI_API_KEY', defaultValue: '');
 
+  // Cache em memória para o insight da Home para evitar chamadas repetidas e erro 429
+  static JarvisInsightResult? _cachedHomeInsight;
+
+  /// Limpa o cache em memória (utilizado em Pull to Refresh ou recarga forçada)
+  static void clearCache() {
+    _cachedHomeInsight = null;
+  }
+
   /// Cria uma sessão de chat multi-turno contextualizada com streaming em tempo real
   static ChatSession? createChatSession({
     required String vehicleName,
@@ -112,7 +120,7 @@ class JarvisAiService {
 
     final systemInstruction = Content.system('''
 Você é o Jarvis, um engenheiro mecânico automotivo de elite e copiloto inteligente do motorista.
-Você está em uma conversa direta via chat com o proprietário do veículo.
+Você está em uma conversa direta via chat instantâneo com o proprietário do veículo.
 
 CONTEXTO REAL DO VEÍCULO DO USUÁRIO:
 - Veículo: $vehicleName
@@ -122,20 +130,14 @@ CONTEXTO REAL DO VEÍCULO DO USUÁRIO:
 - Histórico de Manutenções no Banco de Dados:
 $maintenancesSummary
 
-DIRETRIZES FUNDAMENTAIS DO COPILOTO:
-1. REGRA ZERO (ANTI-ALUCINAÇÃO):
-- NUNCA invente datas, prazos ou manutenções se a lista de manutenções fornecida estiver vazia ou se não houver registro para aquele item.
-- Se o usuário perguntar sobre o histórico e não houver registros, informe com clareza e pergunte se ele gostaria de registrar.
-
-2. DIRETIVA DE PRECISÃO MECÂNICA:
-- Você é um especialista automotivo rigoroso. Ao cruzar a quilometragem atual com o modelo do veículo, você deve consultar sua base de conhecimento interna para garantir que as peças mencionadas existem de fato naquele motor/modelo específico ($vehicleName).
-- NUNCA sugira problemas de tecnologias que o carro não possui (ex: não alerte sobre correia banhada a óleo em um VW Gol).
-- Se houver dúvida sobre a motorização exata, limite-se a manutenções universais aplicáveis àquela km.
-
-3. DIRETIVA DE LINGUAGEM E TOM:
-- O usuário final pode não ser um especialista em carros. Sua comunicação deve ser acessível, didática, envolvente e com autoridade profissional.
-- Aja como um mecânico consultor premium: se precisar usar um termo técnico (ex: corpo de borboleta, pastilha cerâmica, fluido DOT4), traduza o impacto disso para o dia a dia do usuário de forma rápida e prática, focando em segurança, performance e prevenção de gastos.
-- Utilize formatação em markdown limpa (parágrafos curtos, bullet points, negrito) para garantir ótima legibilidade no celular.
+DIRETRIZES OBRIGATÓRIAS DE COMPORTAMENTO:
+1. DIRETIVA DE FORMATO: Responda apenas em texto puro. Não use formatação JSON.
+2. DIRETIVA DE CHAT ÁGIL: Você está em um chat instantâneo. NUNCA gere introduções, saudações ou repita quem você é. Vá direto ao ponto.
+3. DIRETIVA DE TAMANHO: Respostas devem ser curtas e objetivas, com no máximo 2 parágrafos curtos. Não crie listas longas a menos que estritamente necessário. Fale como um humano especialista pelo WhatsApp.
+4. NÃO crie monólogos ou simule raciocínio na resposta final. Entregue apenas o diagnóstico final.
+5. REGRA ZERO (ANTI-ALUCINAÇÃO): NUNCA invente datas, prazos ou manutenções se a lista de manutenções fornecida estiver vazia ou se não houver registro para aquele item. Se o usuário perguntar sobre o histórico e não houver registros, informe com clareza e pergunte se ele gostaria de registrar.
+6. DIRETIVA DE PRECISÃO MECÂNICA: Ao cruzar a quilometragem atual com o modelo do veículo, você deve consultar sua base de conhecimento interna para garantir que as peças mencionadas existem de fato naquele motor/modelo específico ($vehicleName). NUNCA sugira problemas de tecnologias que o carro não possui (ex: não alerte sobre correia banhada a óleo em um VW Gol). Se houver dúvida sobre a motorização exata, limite-se a manutenções universais aplicáveis àquela km.
+7. DIRETIVA DE LINGUAGEM E TOM: Aja como um mecânico consultor premium: se precisar usar um termo técnico, traduza o impacto disso para o dia a dia do usuário de forma rápida e prática, focando em segurança, performance e prevenção de gastos. Utilize formatação em markdown limpa (parágrafos curtos, bullet points concisos, negrito) para garantir ótima legibilidade no celular.
 ''');
 
     final model = GenerativeModel(
@@ -147,16 +149,30 @@ DIRETRIZES FUNDAMENTAIS DO COPILOTO:
     return model.startChat();
   }
 
-  /// Transmite a resposta do chat em tempo real token a token
+  /// Transmite a resposta do chat em tempo real token a token em texto puro (sem JSON)
   static Stream<String> streamChatMessage({
     required ChatSession chatSession,
     required String message,
   }) async* {
-    final responseStream = chatSession.sendMessageStream(Content.text(message));
-    await for (final chunk in responseStream) {
-      if (chunk.text != null && chunk.text!.isNotEmpty) {
-        yield chunk.text!;
+    try {
+      final responseStream =
+          chatSession.sendMessageStream(Content.text(message));
+      await for (final chunk in responseStream) {
+        final text = chunk.text;
+        if (text != null && text.isNotEmpty) {
+          yield text;
+        }
       }
+    } catch (e) {
+      final errStr = e.toString().toLowerCase();
+      if (errStr.contains('429') ||
+          errStr.contains('too many requests') ||
+          errStr.contains('quota') ||
+          errStr.contains('resource_exhausted')) {
+        yield '🤖 [Modo Desenvolvedor]: Layout de chat acoplado com sucesso. Aguarde 1 minuto para a cota da API Google resetar.';
+        return;
+      }
+      rethrow;
     }
   }
 
@@ -167,19 +183,27 @@ DIRETRIZES FUNDAMENTAIS DO COPILOTO:
     required double? averageConsumption,
     required double monthlyExpenses,
     List<Map<String, dynamic>> maintenances = const [],
+    bool forceRefresh = false,
   }) async {
+    // 1. Trava de Cache em Memória: evita chamadas repetidas e protege a cota da API (429)
+    if (!forceRefresh && _cachedHomeInsight != null) {
+      return _cachedHomeInsight!;
+    }
+
     // Verificação de segurança: se a chave estiver vazia, retorna fallback contextual mecânico
     if (_apiKey.isEmpty) {
       debugPrint(
         '--- AVISO: GEMINI_API_KEY não configurada via --dart-define. Utilizando fallback local. ---',
       );
-      return _generateLocalFallback(
+      final fallback = _generateLocalFallback(
         vehicleName: vehicleName,
         mileage: mileage,
         averageConsumption: averageConsumption,
         monthlyExpenses: monthlyExpenses,
         maintenances: maintenances,
       );
+      _cachedHomeInsight = fallback;
+      return fallback;
     }
 
     try {
@@ -263,6 +287,7 @@ Analise a telemetria acima aplicando as diretrizes de precisão mecânica, tom a
       if (rawText != null && rawText.isNotEmpty) {
         final parsedResult = _parseJsonInsight(rawText);
         if (parsedResult != null) {
+          _cachedHomeInsight = parsedResult;
           return parsedResult;
         }
       }
@@ -277,13 +302,15 @@ Analise a telemetria acima aplicando as diretrizes de precisão mecânica, tom a
     }
 
     // Fallback contextual mecânico caso a chamada falhe por rede, timeout ou oscilação da API
-    return _generateLocalFallback(
+    final fallback = _generateLocalFallback(
       vehicleName: vehicleName,
       mileage: mileage,
       averageConsumption: averageConsumption,
       monthlyExpenses: monthlyExpenses,
       maintenances: maintenances,
     );
+    _cachedHomeInsight = fallback;
+    return fallback;
   }
 
   /// Realiza o parse robusto do JSON retornado pelo Gemini, limpando eventuais marcações markdown.

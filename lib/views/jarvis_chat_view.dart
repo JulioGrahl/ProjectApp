@@ -185,6 +185,7 @@ class _JarvisChatViewState extends State<JarvisChatView> {
     final query = text.trim();
     if (query.isEmpty || _isGenerating) return;
 
+    _streamSubscription?.cancel();
     _textController.clear();
 
     final userMsg = _ChatMessage(
@@ -269,12 +270,19 @@ class _JarvisChatViewState extends State<JarvisChatView> {
         onError: (error) {
           timeoutTimer.cancel();
           debugPrint('--- ERRO NO STREAMING DO JARVIS CHAT: $error ---');
+          final errStr = error.toString().toLowerCase();
+          final isQuota = errStr.contains('429') ||
+              errStr.contains('too many requests') ||
+              errStr.contains('quota') ||
+              errStr.contains('resource_exhausted');
+
           if (mounted) {
             setState(() {
               jarvisMsg.isTyping = false;
               if (jarvisMsg.text.isEmpty) {
-                jarvisMsg.text =
-                    'Houve uma instabilidade temporária na telemetria. Aqui está o conselho de segurança: consulte o manual do proprietário e verifique os fluidos essenciais.';
+                jarvisMsg.text = isQuota
+                    ? '🤖 [Modo Desenvolvedor]: Layout de chat acoplado com sucesso. Aguarde 1 minuto para a cota da API Google resetar.'
+                    : 'Houve uma instabilidade temporária na telemetria. Aqui está o conselho de segurança: consulte o manual do proprietário e verifique os fluidos essenciais.';
               }
               _isGenerating = false;
             });
@@ -286,11 +294,20 @@ class _JarvisChatViewState extends State<JarvisChatView> {
     } catch (e) {
       timeoutTimer.cancel();
       debugPrint('--- ERRO AO INICIAR STREAMING: $e ---');
+      final errStr = e.toString().toLowerCase();
+      final isQuota = errStr.contains('429') ||
+          errStr.contains('too many requests') ||
+          errStr.contains('quota') ||
+          errStr.contains('resource_exhausted');
+
       if (mounted) {
         setState(() {
           jarvisMsg.isTyping = false;
-          jarvisMsg.text =
-              'Desculpe, ocorreu um erro ao processar a resposta. Tente novamente em instantes.';
+          if (jarvisMsg.text.isEmpty) {
+            jarvisMsg.text = isQuota
+                ? '🤖 [Modo Desenvolvedor]: Layout de chat acoplado com sucesso. Aguarde 1 minuto para a cota da API Google resetar.'
+                : 'Desculpe, ocorreu um erro ao processar a resposta. Tente novamente em instantes.';
+          }
           _isGenerating = false;
         });
         _scrollToBottom();
@@ -334,6 +351,8 @@ class _JarvisChatViewState extends State<JarvisChatView> {
     final mileage = (_vehicle?['mileage'] as num?)?.toInt() ?? 0;
 
     return Scaffold(
+      extendBody: false,
+      resizeToAvoidBottomInset: true,
       appBar: AppBar(
         backgroundColor: const Color(0xFF1E2028),
         elevation: 0,
@@ -414,6 +433,7 @@ class _JarvisChatViewState extends State<JarvisChatView> {
         ],
       ),
       body: SafeArea(
+        bottom: false,
         child: _isInitLoading
             ? Center(
                 child: CircularProgressIndicator(color: primaryColor),
@@ -648,7 +668,7 @@ class _JarvisChatViewState extends State<JarvisChatView> {
 
   Widget _buildInputBar(Color primaryColor) {
     return Container(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 96),
+      padding: const EdgeInsets.fromLTRB(16, 6, 16, 8),
       color: Colors.transparent,
       child: Row(
         children: [
