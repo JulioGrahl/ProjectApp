@@ -71,7 +71,7 @@ class _MainLayoutState extends State<MainLayout> {
                         shape: BoxShape.circle,
                       ),
                       child: Icon(
-                        Icons.bolt_rounded,
+                        Icons.cyclone_rounded,
                         color: primaryColor,
                         size: 22,
                       ),
@@ -434,117 +434,77 @@ class _MainLayoutState extends State<MainLayout> {
     final theme = Theme.of(context);
     final primaryColor = theme.colorScheme.primary;
 
-    return Stack(
-      children: [
-        Scaffold(
-          extendBody: false,
-          resizeToAvoidBottomInset: true,
-          body: IndexedStack(
-            index: _currentIndex,
-            children: _pages,
-          ),
-          // FAB "Fantasma" apenas para disparar a animação nativa do notch na BottomAppBar
-          floatingActionButton: _currentIndex == 1
-              ? null
-              : const SizedBox(width: 56, height: 56),
-          floatingActionButtonLocation:
-              FloatingActionButtonLocation.centerDocked,
-          bottomNavigationBar: BottomAppBar(
-            shape: const CircularNotchedRectangle(),
-            notchMargin: 8.0,
-            color: const Color(0xFF1E2028),
-            elevation: 10,
-            height: 68,
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+    return Scaffold(
+      resizeToAvoidBottomInset: true,
+      body: IndexedStack(
+        index: _currentIndex,
+        children: _pages,
+      ),
+      floatingActionButton: FloatingActionButton(
+        onPressed: () => _showQuickActionsHub(context),
+        elevation: 6,
+        backgroundColor: primaryColor,
+        shape: const CircleBorder(),
+        child: const Icon(
+          Icons.cyclone_rounded,
+          color: Color(0xFF121316),
+          size: 28,
+        ),
+      ),
+      floatingActionButtonLocation: FloatingActionButtonLocation.centerDocked,
+      bottomNavigationBar: BottomAppBar(
+        shape: const CircularNotchedRectangle(),
+        notchMargin: 8.0,
+        color: const Color(0xFF1E2028),
+        elevation: 10,
+        height: 64,
+        padding: const EdgeInsets.symmetric(horizontal: 16),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            // Esquerda: Início e Jarvis
+            Row(
               children: [
-                // Esquerda: Início e Jarvis
-                Row(
-                  children: [
-                    _buildNavItem(
-                      index: 0,
-                      icon: Icons.home_rounded,
-                      label: 'Início',
-                      primaryColor: primaryColor,
-                    ),
-                    const SizedBox(width: 8),
-                    _buildNavItem(
-                      index: 1,
-                      icon: Icons.auto_awesome_rounded,
-                      label: 'Jarvis',
-                      primaryColor: primaryColor,
-                    ),
-                  ],
+                _buildNavItem(
+                  index: 0,
+                  icon: Icons.home_rounded,
+                  label: 'Início',
+                  primaryColor: primaryColor,
                 ),
-
-                // Espaço central reservado para o botão
-                const SizedBox(width: 56),
-
-                // Direita: Veículo e Conta
-                Row(
-                  children: [
-                    _buildNavItem(
-                      index: 2,
-                      icon: Icons.directions_car_rounded,
-                      label: 'Veículo',
-                      primaryColor: primaryColor,
-                    ),
-                    const SizedBox(width: 8),
-                    _buildNavItem(
-                      index: 3,
-                      icon: Icons.person_rounded,
-                      label: 'Conta',
-                      primaryColor: primaryColor,
-                    ),
-                  ],
+                const SizedBox(width: 8),
+                _buildNavItem(
+                  index: 1,
+                  icon: Icons.auto_awesome_rounded,
+                  label: 'Jarvis',
+                  primaryColor: primaryColor,
                 ),
               ],
             ),
-          ),
-        ),
 
-        // Botão Físico Universal Animado (Morphing e Deslizamento Y)
-        AnimatedPositioned(
-          duration: const Duration(milliseconds: 350),
-          curve: Curves.easeInOutCubic,
-          bottom: _currentIndex == 1 ? 16.0 : 46.0,
-          left: 0,
-          right: 0,
-          child: Align(
-            alignment: Alignment.bottomCenter,
-            child: GestureDetector(
-              onTap: () => _showQuickActionsHub(context),
-              child: AnimatedContainer(
-                duration: const Duration(milliseconds: 350),
-                curve: Curves.easeInOutCubic,
-                width: _currentIndex == 1 ? 46.0 : 56.0,
-                height: _currentIndex == 1 ? 46.0 : 56.0,
-                decoration: BoxDecoration(
-                  color: primaryColor,
-                  shape: BoxShape.circle,
-                  boxShadow: const [
-                    BoxShadow(
-                      color: Colors.black26,
-                      blurRadius: 8,
-                      offset: Offset(0, 4),
-                    ),
-                  ],
+            // Espaço central reservado para o botão de Turbina
+            const SizedBox(width: 48),
+
+            // Direita: Veículo e Conta
+            Row(
+              children: [
+                _buildNavItem(
+                  index: 2,
+                  icon: Icons.directions_car_rounded,
+                  label: 'Veículo',
+                  primaryColor: primaryColor,
                 ),
-                child: AnimatedScale(
-                  duration: const Duration(milliseconds: 350),
-                  scale: _currentIndex == 1 ? 0.8 : 1.0,
-                  child: const Icon(
-                    Icons.bolt_rounded,
-                    color: Color(0xFF121316),
-                    size: 28,
-                  ),
+                const SizedBox(width: 8),
+                _buildNavItem(
+                  index: 3,
+                  icon: Icons.person_rounded,
+                  label: 'Conta',
+                  primaryColor: primaryColor,
                 ),
-              ),
+              ],
             ),
-          ),
+          ],
         ),
-      ],
+      ),
     );
   }
 

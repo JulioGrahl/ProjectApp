@@ -805,6 +805,8 @@ class _HomeViewState extends State<HomeView> {
   }
 
   Widget _buildWelcomeHeader(ThemeData theme) {
+    final user = Supabase.instance.client.auth.currentUser;
+    final avatarUrl = user?.userMetadata?['avatar_url'] as String?;
     final vehicleTitle = activeVehicle != null
         ? '${activeVehicle!['brand']} ${activeVehicle!['model']}'
         : 'Nenhum veículo selecionado';
@@ -812,39 +814,72 @@ class _HomeViewState extends State<HomeView> {
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              'Olá, $userName 👋',
-              style: const TextStyle(
-                fontSize: 26,
-                fontWeight: FontWeight.w800,
-                color: Colors.white,
-                letterSpacing: -0.5,
-              ),
-            ),
-            const SizedBox(height: 4),
-            Row(
-              children: [
-                Icon(
-                  Icons.directions_car_rounded,
-                  size: 16,
-                  color: theme.colorScheme.primary,
-                ),
-                const SizedBox(width: 6),
-                Text(
-                  vehicleTitle,
-                  style: TextStyle(
-                    fontSize: 14,
-                    color: Colors.grey[400],
-                    fontWeight: FontWeight.w500,
+        Expanded(
+          child: Row(
+            children: [
+              if (avatarUrl != null && avatarUrl.trim().isNotEmpty) ...[
+                CircleAvatar(
+                  radius: 22,
+                  backgroundColor: theme.colorScheme.primary.withValues(alpha: 0.2),
+                  child: ClipOval(
+                    child: Image.network(
+                      avatarUrl,
+                      width: 44,
+                      height: 44,
+                      fit: BoxFit.cover,
+                      errorBuilder: (context, error, stackTrace) => Icon(
+                        Icons.person_rounded,
+                        color: theme.colorScheme.primary,
+                        size: 24,
+                      ),
+                    ),
                   ),
                 ),
+                const SizedBox(width: 12),
               ],
-            ),
-          ],
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Olá, $userName 👋',
+                      style: const TextStyle(
+                        fontSize: 24,
+                        fontWeight: FontWeight.w800,
+                        color: Colors.white,
+                        letterSpacing: -0.5,
+                      ),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 4),
+                    Row(
+                      children: [
+                        Icon(
+                          Icons.directions_car_rounded,
+                          size: 16,
+                          color: theme.colorScheme.primary,
+                        ),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: Text(
+                            vehicleTitle,
+                            style: TextStyle(
+                              fontSize: 14,
+                              color: Colors.grey[400],
+                              fontWeight: FontWeight.w500,
+                            ),
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
+        const SizedBox(width: 8),
         Material(
           color: const Color(0xFF1E2028),
           shape: const CircleBorder(),
