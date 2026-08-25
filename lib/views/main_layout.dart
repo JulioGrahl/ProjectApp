@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:projectapp/services/vehicle_service.dart';
 import 'package:projectapp/views/account_view.dart';
 import 'package:projectapp/views/add_refuel_view.dart';
 import 'package:projectapp/views/home_view.dart';
@@ -71,7 +73,7 @@ class _MainLayoutState extends State<MainLayout> {
                         shape: BoxShape.circle,
                       ),
                       child: Icon(
-                        Icons.cyclone_rounded,
+                        Icons.settings_suggest_rounded,
                         color: primaryColor,
                         size: 22,
                       ),
@@ -227,203 +229,27 @@ class _MainLayoutState extends State<MainLayout> {
   }
 
   Future<Map<String, dynamic>?> _fetchActiveVehicle() async {
-    final user = Supabase.instance.client.auth.currentUser;
-    if (user == null) return null;
-    try {
-      return await Supabase.instance.client
-          .from('vehicles')
-          .select()
-          .eq('user_id', user.id)
-          .maybeSingle();
-    } catch (_) {
-      return null;
-    }
+    final active = VehicleService.activeVehicleNotifier.value;
+    if (active != null) return active;
+    final list = await VehicleService.loadVehicles();
+    return list.firstOrNull;
   }
 
   void _showUpdateOdometerModal(BuildContext parentContext) async {
     final vehicle = await _fetchActiveVehicle();
     if (!parentContext.mounted) return;
 
-    final currentMileage = (vehicle?['mileage'] as num?)?.toInt() ?? 0;
-    final controller = TextEditingController(
-      text: currentMileage > 0 ? currentMileage.toString() : '',
-    );
-    final formKey = GlobalKey<FormState>();
-    bool isSaving = false;
-
     showModalBottomSheet(
       context: parentContext,
-      useRootNavigator: true,
       isScrollControlled: true,
       backgroundColor: const Color(0xFF1A1B22),
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(32)),
       ),
       builder: (sheetContext) {
-        return StatefulBuilder(
-          builder: (modalCtx, setModalState) {
-            return Padding(
-              padding: EdgeInsets.only(
-                left: 24,
-                right: 24,
-                top: 20,
-                bottom: MediaQuery.of(modalCtx).viewInsets.bottom + 24,
-              ),
-              child: Form(
-                key: formKey,
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Center(
-                      child: Container(
-                        width: 44,
-                        height: 5,
-                        decoration: BoxDecoration(
-                          color: Colors.white.withValues(alpha: 0.2),
-                          borderRadius: BorderRadius.circular(3),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 20),
-                    Row(
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.all(10),
-                          decoration: BoxDecoration(
-                            color: Colors.greenAccent.withValues(alpha: 0.15),
-                            shape: BoxShape.circle,
-                          ),
-                          child: const Icon(
-                            Icons.speed_rounded,
-                            color: Colors.greenAccent,
-                            size: 22,
-                          ),
-                        ),
-                        const SizedBox(width: 14),
-                        const Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              'Atualizar Odômetro',
-                              style: TextStyle(
-                                fontSize: 18,
-                                fontWeight: FontWeight.w800,
-                                color: Colors.white,
-                              ),
-                            ),
-                            SizedBox(height: 2),
-                            Text(
-                              'Informe a quilometragem atual do painel',
-                              style: TextStyle(
-                                fontSize: 12.5,
-                                color: Colors.grey,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 24),
-                    TextFormField(
-                      controller: controller,
-                      keyboardType: TextInputType.number,
-                      inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                      autofocus: true,
-                      style: const TextStyle(
-                        fontSize: 22,
-                        fontWeight: FontWeight.bold,
-                        color: Colors.white,
-                      ),
-                      decoration: const InputDecoration(
-                        labelText: 'Quilometragem Atual (km)',
-                        suffixText: 'km',
-                        prefixIcon: Icon(Icons.speed_rounded),
-                      ),
-                      validator: (val) {
-                        if (val == null || val.trim().isEmpty) {
-                          return 'Informe a quilometragem';
-                        }
-                        final numVal = int.tryParse(val.trim());
-                        if (numVal == null || numVal < 0) {
-                          return 'Quilometragem inválida';
-                        }
-                        return null;
-                      },
-                    ),
-                    const SizedBox(height: 24),
-                    SizedBox(
-                      height: 52,
-                      child: ElevatedButton(
-                        onPressed: isSaving
-                            ? null
-                            : () async {
-                                if (!formKey.currentState!.validate()) return;
-                                setModalState(() => isSaving = true);
-                                final newKm = int.parse(controller.text.trim());
-                                final userId =
-                                    Supabase.instance.client.auth.currentUser?.id;
-
-                                try {
-                                  if (userId != null && vehicle != null) {
-                                    await Supabase.instance.client
-                                        .from('vehicles')
-                                        .update({
-                                      'mileage': newKm,
-                                      'updated_at':
-                                          DateTime.now().toIso8601String(),
-                                    }).eq('id', vehicle['id']);
-                                  }
-
-                                  if (sheetContext.mounted) {
-                                    Navigator.pop(sheetContext);
-                                  }
-
-                                  if (parentContext.mounted) {
-                                    ScaffoldMessenger.of(parentContext)
-                                        .showSnackBar(
-                                      SnackBar(
-                                        content: Text(
-                                          'Odômetro atualizado para $newKm km!',
-                                        ),
-                                        backgroundColor: Colors.green[700],
-                                      ),
-                                    );
-                                  }
-                                } catch (err) {
-                                  debugPrint('--- ERRO AO ATUALIZAR ODÔMETRO: $err ---');
-                                } finally {
-                                  if (modalCtx.mounted) {
-                                    setModalState(() => isSaving = false);
-                                  }
-                                }
-                              },
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: const Color(0xFFFACC15),
-                          foregroundColor: const Color(0xFF121316),
-                          shape: const StadiumBorder(),
-                          textStyle: const TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        child: isSaving
-                            ? const SizedBox(
-                                width: 20,
-                                height: 20,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  color: Color(0xFF121316),
-                                ),
-                              )
-                            : const Text('Salvar Nova Quilometragem'),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            );
-          },
+        return _UpdateOdometerBottomSheet(
+          vehicle: vehicle,
+          parentContext: parentContext,
         );
       },
     );
@@ -440,69 +266,55 @@ class _MainLayoutState extends State<MainLayout> {
         index: _currentIndex,
         children: _pages,
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: () => _showQuickActionsHub(context),
-        elevation: 6,
-        backgroundColor: primaryColor,
-        shape: const CircleBorder(),
-        child: const Icon(
-          Icons.cyclone_rounded,
-          color: Color(0xFF121316),
-          size: 28,
+      bottomNavigationBar: Container(
+        decoration: BoxDecoration(
+          color: const Color(0xFF121316),
+          border: Border(
+            top: BorderSide(
+              color: Colors.white.withValues(alpha: 0.08),
+              width: 1,
+            ),
+          ),
         ),
-      ),
-      floatingActionButtonLocation: FloatingActionButtonLocation.centerDocked,
-      bottomNavigationBar: BottomAppBar(
-        shape: const CircularNotchedRectangle(),
-        notchMargin: 8.0,
-        color: const Color(0xFF1E2028),
-        elevation: 10,
-        height: 64,
-        padding: const EdgeInsets.symmetric(horizontal: 16),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            // Esquerda: Início e Jarvis
-            Row(
-              children: [
-                _buildNavItem(
-                  index: 0,
-                  icon: Icons.home_rounded,
-                  label: 'Início',
-                  primaryColor: primaryColor,
-                ),
-                const SizedBox(width: 8),
-                _buildNavItem(
-                  index: 1,
-                  icon: Icons.auto_awesome_rounded,
-                  label: 'Jarvis',
-                  primaryColor: primaryColor,
-                ),
-              ],
-            ),
-
-            // Espaço central reservado para o botão de Turbina
-            const SizedBox(width: 48),
-
-            // Direita: Veículo e Conta
-            Row(
-              children: [
-                _buildNavItem(
-                  index: 2,
-                  icon: Icons.directions_car_rounded,
-                  label: 'Veículo',
-                  primaryColor: primaryColor,
-                ),
-                const SizedBox(width: 8),
-                _buildNavItem(
-                  index: 3,
-                  icon: Icons.person_rounded,
-                  label: 'Conta',
-                  primaryColor: primaryColor,
-                ),
-              ],
-            ),
-          ],
+        child: BottomAppBar(
+          color: Colors.transparent,
+          elevation: 0,
+          height: 68,
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceAround,
+            children: [
+              _buildNavItem(
+                index: 0,
+                icon: Icons.home_rounded,
+                label: 'Início',
+                primaryColor: primaryColor,
+              ),
+              _buildNavItem(
+                index: 1,
+                icon: Icons.chat_bubble_outline_rounded,
+                label: 'Jarvis',
+                primaryColor: primaryColor,
+              ),
+              // Botão da Turbina Integrado e Nivelado com Animação Fluida
+              _TurbineNavButton(
+                onTap: () => _showQuickActionsHub(context),
+                primaryColor: primaryColor,
+              ),
+              _buildNavItem(
+                index: 2,
+                icon: Icons.directions_car_rounded,
+                label: 'Garagem',
+                primaryColor: primaryColor,
+              ),
+              _buildNavItem(
+                index: 3,
+                icon: Icons.person_rounded,
+                label: 'Conta',
+                primaryColor: primaryColor,
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -516,31 +328,385 @@ class _MainLayoutState extends State<MainLayout> {
   }) {
     final isSelected = _currentIndex == index;
 
-    return InkWell(
-      onTap: () {
-        setState(() {
-          _currentIndex = index;
-        });
-      },
-      borderRadius: BorderRadius.circular(16),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12.0, vertical: 6.0),
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      child: GestureDetector(
+        onTap: () {
+          setState(() {
+            _currentIndex = index;
+          });
+        },
+        behavior: HitTestBehavior.opaque,
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10.0, vertical: 6.0),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              AnimatedScale(
+                scale: isSelected ? 1.12 : 1.0,
+                duration: const Duration(milliseconds: 200),
+                curve: Curves.easeOutCubic,
+                child: Icon(
+                  icon,
+                  color: isSelected ? primaryColor : Colors.grey[500],
+                  size: 22,
+                ),
+              ),
+              const SizedBox(height: 3),
+              AnimatedDefaultTextStyle(
+                duration: const Duration(milliseconds: 200),
+                style: TextStyle(
+                  color: isSelected ? primaryColor : Colors.grey[500],
+                  fontSize: 11,
+                  fontWeight: isSelected ? FontWeight.w800 : FontWeight.w500,
+                ),
+                child: Text(label),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Botão da Turbina Integrado à Barra de Navegação com Animação Fluida e Blindagem Web
+class _TurbineNavButton extends StatefulWidget {
+  final VoidCallback onTap;
+  final Color primaryColor;
+
+  const _TurbineNavButton({
+    required this.onTap,
+    required this.primaryColor,
+  });
+
+  @override
+  State<_TurbineNavButton> createState() => _TurbineNavButtonState();
+}
+
+class _TurbineNavButtonState extends State<_TurbineNavButton>
+    with SingleTickerProviderStateMixin {
+  late AnimationController _controller;
+  late Animation<double> _scaleAnimation;
+  late Animation<double> _rotationAnimation;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 300),
+    );
+
+    // Curva segura estritamente contida no intervalo [0.0, 1.0] (sem overshoots do easeOutBack)
+    final CurvedAnimation curve = CurvedAnimation(
+      parent: _controller,
+      curve: Curves.easeInOutCubic,
+    );
+
+    _scaleAnimation = Tween<double>(begin: 1.0, end: 0.88).animate(curve);
+    _rotationAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(curve);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _handleTap() {
+    _controller.forward().then((_) {
+      if (mounted) {
+        _controller.reverse();
+      }
+    });
+    widget.onTap();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      child: GestureDetector(
+        onTap: _handleTap,
+        behavior: HitTestBehavior.opaque,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 6.0, vertical: 4.0),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              AnimatedBuilder(
+                animation: _controller,
+                builder: (_, child) {
+                  return Transform.scale(
+                    scale: _scaleAnimation.value,
+                    child: Transform.rotate(
+                      angle: _rotationAnimation.value * 3.14159 * 2,
+                      child: child,
+                    ),
+                  );
+                },
+                child: Container(
+                  width: 38,
+                  height: 38,
+                  decoration: BoxDecoration(
+                    color: widget.primaryColor,
+                    shape: BoxShape.circle,
+                    boxShadow: [
+                      BoxShadow(
+                        color: widget.primaryColor.withValues(alpha: 0.3),
+                        blurRadius: 8,
+                        spreadRadius: 1,
+                      ),
+                    ],
+                  ),
+                  child: Stack(
+                    alignment: Alignment.center,
+                    children: [
+                      SvgPicture.asset(
+                        'assets/icons/turbina-jarvis.svg',
+                        width: 24,
+                        height: 24,
+                        colorFilter: const ColorFilter.mode(
+                          Color(0xFF121316),
+                          BlendMode.srcIn,
+                        ),
+                      ),
+                      Positioned(
+                        top: 4,
+                        right: 4,
+                        child: Container(
+                          padding: const EdgeInsets.all(1.5),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withValues(alpha: 0.4),
+                            shape: BoxShape.circle,
+                          ),
+                          child: const Icon(
+                            Icons.auto_awesome,
+                            size: 8,
+                            color: Color(0xFF121316),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 2),
+              Text(
+                'Ações',
+                style: TextStyle(
+                  color: widget.primaryColor,
+                  fontSize: 10.5,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 0.4,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _UpdateOdometerBottomSheet extends StatefulWidget {
+  final Map<String, dynamic>? vehicle;
+  final BuildContext parentContext;
+
+  const _UpdateOdometerBottomSheet({
+    required this.vehicle,
+    required this.parentContext,
+  });
+
+  @override
+  State<_UpdateOdometerBottomSheet> createState() =>
+      _UpdateOdometerBottomSheetState();
+}
+
+class _UpdateOdometerBottomSheetState
+    extends State<_UpdateOdometerBottomSheet> {
+  final _formKey = GlobalKey<FormState>();
+  late TextEditingController _controller;
+  bool _isSaving = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final currentMileage = (widget.vehicle?['mileage'] as num?)?.toInt() ?? 0;
+    _controller = TextEditingController(
+      text: currentMileage > 0 ? currentMileage.toString() : '',
+    );
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: EdgeInsets.only(
+        left: 24,
+        right: 24,
+        top: 20,
+        bottom: MediaQuery.of(context).viewInsets.bottom + 24,
+      ),
+      child: Form(
+        key: _formKey,
         child: Column(
           mainAxisSize: MainAxisSize.min,
-          mainAxisAlignment: MainAxisAlignment.center,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Icon(
-              icon,
-              color: isSelected ? primaryColor : Colors.grey[500],
-              size: 24,
+            Center(
+              child: Container(
+                width: 44,
+                height: 5,
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.2),
+                  borderRadius: BorderRadius.circular(3),
+                ),
+              ),
             ),
-            const SizedBox(height: 3),
-            Text(
-              label,
-              style: TextStyle(
-                color: isSelected ? primaryColor : Colors.grey[500],
-                fontSize: 11.5,
-                fontWeight: isSelected ? FontWeight.bold : FontWeight.w500,
+            const SizedBox(height: 20),
+            Row(
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: Colors.greenAccent.withValues(alpha: 0.15),
+                    shape: BoxShape.circle,
+                  ),
+                  child: const Icon(
+                    Icons.speed_rounded,
+                    color: Colors.greenAccent,
+                    size: 22,
+                  ),
+                ),
+                const SizedBox(width: 14),
+                const Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Atualizar Odômetro',
+                      style: TextStyle(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w800,
+                        color: Colors.white,
+                      ),
+                    ),
+                    SizedBox(height: 2),
+                    Text(
+                      'Informe a quilometragem atual do painel',
+                      style: TextStyle(
+                        fontSize: 12.5,
+                        color: Colors.grey,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+            const SizedBox(height: 24),
+            TextFormField(
+              controller: _controller,
+              keyboardType: TextInputType.number,
+              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+              autofocus: true,
+              style: const TextStyle(
+                fontSize: 22,
+                fontWeight: FontWeight.bold,
+                color: Colors.white,
+              ),
+              decoration: const InputDecoration(
+                labelText: 'Quilometragem Atual (km)',
+                suffixText: 'km',
+                prefixIcon: Icon(Icons.speed_rounded),
+              ),
+              validator: (val) {
+                if (val == null || val.trim().isEmpty) {
+                  return 'Informe a quilometragem';
+                }
+                final numVal = int.tryParse(val.trim());
+                if (numVal == null || numVal < 0) {
+                  return 'Quilometragem inválida';
+                }
+                return null;
+              },
+            ),
+            const SizedBox(height: 24),
+            SizedBox(
+              height: 52,
+              child: ElevatedButton(
+                onPressed: _isSaving
+                    ? null
+                    : () async {
+                        if (!_formKey.currentState!.validate()) return;
+                        setState(() => _isSaving = true);
+                        final newKm = int.parse(_controller.text.trim());
+                        final userId =
+                            Supabase.instance.client.auth.currentUser?.id;
+
+                        final messenger =
+                            ScaffoldMessenger.of(widget.parentContext);
+                        final nav = Navigator.of(context);
+
+                        try {
+                          if (userId != null && widget.vehicle != null) {
+                            await Supabase.instance.client
+                                .from('vehicles')
+                                .update({
+                              'mileage': newKm,
+                              'updated_at': DateTime.now().toIso8601String(),
+                            }).eq('id', widget.vehicle!['id']);
+
+                            await VehicleService.loadVehicles(
+                              preferredVehicleId:
+                                  widget.vehicle!['id'].toString(),
+                            );
+                          }
+
+                          nav.pop();
+
+                          messenger.showSnackBar(
+                            SnackBar(
+                              content: Text(
+                                'Odômetro atualizado para $newKm km!',
+                              ),
+                              backgroundColor: Colors.green[700],
+                            ),
+                          );
+                        } catch (err) {
+                          debugPrint(
+                              '--- ERRO AO ATUALIZAR ODÔMETRO: $err ---');
+                          if (mounted) {
+                            setState(() => _isSaving = false);
+                          }
+                        }
+                      },
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: const Color(0xFFFACC15),
+                  foregroundColor: const Color(0xFF121316),
+                  shape: const StadiumBorder(),
+                  textStyle: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+                child: _isSaving
+                    ? const SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Color(0xFF121316),
+                        ),
+                      )
+                    : const Text('Salvar Nova Quilometragem'),
               ),
             ),
           ],

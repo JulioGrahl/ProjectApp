@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:google_generative_ai/google_generative_ai.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:projectapp/services/jarvis_ai_service.dart';
+import 'package:projectapp/services/vehicle_service.dart';
 
 class _ChatMessage {
   String text;
@@ -51,18 +52,34 @@ class _JarvisChatViewState extends State<JarvisChatView> {
   @override
   void initState() {
     super.initState();
+    VehicleService.activeVehicleNotifier.addListener(_onActiveVehicleChanged);
     _loadVehicleAndInitChat();
   }
 
   @override
   void dispose() {
+    VehicleService.activeVehicleNotifier.removeListener(_onActiveVehicleChanged);
     _streamSubscription?.cancel();
     _textController.dispose();
     _scrollController.dispose();
     super.dispose();
   }
 
+  bool _isInitializing = false;
+  String? _loadedVehicleId;
+
+  void _onActiveVehicleChanged() {
+    final newVehicle = VehicleService.activeVehicleNotifier.value;
+    final newId = newVehicle?['id']?.toString();
+    if (newId != _loadedVehicleId && mounted) {
+      _loadVehicleAndInitChat();
+    }
+  }
+
   Future<void> _loadVehicleAndInitChat() async {
+    if (_isInitializing) return;
+    _isInitializing = true;
+
     final user = Supabase.instance.client.auth.currentUser;
     if (user == null) {
       if (mounted) {
@@ -70,30 +87,38 @@ class _JarvisChatViewState extends State<JarvisChatView> {
           _isInitLoading = false;
         });
       }
+      _isInitializing = false;
       return;
     }
 
     try {
-      // 1. Veículo
-      final vehicleData = await Supabase.instance.client
-          .from('vehicles')
-          .select()
-          .eq('user_id', user.id)
-          .maybeSingle();
+      // 1. Obtém o veículo ativo da memória local sem relançar VehicleService.loadVehicles() em loop
+      final vehicleData = VehicleService.activeVehicleNotifier.value;
+      final vehicleId = vehicleData?['id']?.toString();
+      _loadedVehicleId = vehicleId;
 
-      // 2. Manutenções
-      final maintenancesData = await Supabase.instance.client
-          .from('vehicle_maintenances')
-          .select()
-          .eq('user_id', user.id)
-          .order('target_mileage', ascending: true);
+      List<Map<String, dynamic>> maintenancesData = [];
+      List<Map<String, dynamic>> refuelsData = [];
 
-      // 3. Abastecimentos para cálculo de consumo e gastos
-      final refuelsData = await Supabase.instance.client
-          .from('refuels')
-          .select()
-          .eq('user_id', user.id)
-          .order('odometer', ascending: true);
+      if (vehicleId != null && vehicleId.isNotEmpty) {
+        // 2. Manutenções ESTRITAMENTE do veículo ativo
+        final mRes = await Supabase.instance.client
+            .from('vehicle_maintenances')
+            .select()
+            .eq('user_id', user.id)
+            .eq('vehicle_id', vehicleId)
+            .order('target_mileage', ascending: true);
+        maintenancesData = List<Map<String, dynamic>>.from(mRes);
+
+        // 3. Abastecimentos ESTRITAMENTE do veículo ativo
+        final rRes = await Supabase.instance.client
+            .from('refuels')
+            .select()
+            .eq('user_id', user.id)
+            .eq('vehicle_id', vehicleId)
+            .order('odometer', ascending: true);
+        refuelsData = List<Map<String, dynamic>>.from(rRes);
+      }
 
       final rList = List<Map<String, dynamic>>.from(refuelsData);
       _calculateMetrics(rList);
@@ -115,12 +140,13 @@ class _JarvisChatViewState extends State<JarvisChatView> {
         maintenances: _maintenances,
       );
 
-      // Mensagem de boas-vindas inicial do Jarvis
+      // Mensagem de boas-vindas inicial do Jarvis (Limpa o histórico anterior para evitar mensagens duplicadas)
       final kmFormatted = mileage > 0 ? '$mileage km' : 'sem km informada';
       final welcomeText = vehicleData != null
           ? 'Olá! Sou o **Jarvis**, seu copiloto mecânico de elite. Estou conectado à telemetria do seu **$vehicleName** ($kmFormatted). Como posso te ajudar hoje?'
           : 'Olá! Sou o **Jarvis**, seu copiloto automotivo. Cadastre seu veículo para que eu possa monitorar a telemetria e auxiliar você em tempo real!';
 
+      _messages.clear();
       _messages.add(
         _ChatMessage(
           text: welcomeText,
@@ -131,6 +157,7 @@ class _JarvisChatViewState extends State<JarvisChatView> {
     } catch (e) {
       debugPrint('--- ERRO AO INICIALIZAR CHAT JARVIS: $e ---');
     } finally {
+      _isInitializing = false;
       if (mounted) {
         setState(() {
           _isInitLoading = false;

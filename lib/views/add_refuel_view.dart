@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:projectapp/services/jarvis_ai_service.dart';
+import 'package:projectapp/services/vehicle_service.dart';
 
 void showAddRefuelBottomSheet(
   BuildContext context, {
@@ -44,11 +46,21 @@ class _AddRefuelBottomSheetState extends State<AddRefuelBottomSheet> {
   bool _fullTank = true;
   bool _isSubmitting = false;
 
+  Map<String, dynamic>? _selectedVehicle;
+  String? _selectedVehicleId;
+
   @override
   void initState() {
     super.initState();
-    if (widget.vehicle != null && widget.vehicle!['mileage'] != null) {
-      _odometerController.text = widget.vehicle!['mileage'].toString();
+    final userVehicles = VehicleService.userVehiclesNotifier.value;
+    _selectedVehicle = widget.vehicle ?? VehicleService.activeVehicleNotifier.value;
+    if (_selectedVehicle == null && userVehicles.isNotEmpty) {
+      _selectedVehicle = userVehicles.first;
+    }
+
+    _selectedVehicleId = _selectedVehicle?['id']?.toString();
+    if (_selectedVehicle != null && _selectedVehicle!['mileage'] != null) {
+      _odometerController.text = _selectedVehicle!['mileage'].toString();
     }
   }
 
@@ -107,15 +119,10 @@ class _AddRefuelBottomSheetState extends State<AddRefuelBottomSheet> {
     });
 
     try {
-      // Busca o veículo ativo do usuário se não tiver sido passado
-      Map<String, dynamic>? activeVehicle = widget.vehicle;
-      activeVehicle ??= await Supabase.instance.client
-          .from('vehicles')
-          .select()
-          .eq('user_id', userId)
-          .maybeSingle();
+      Map<String, dynamic>? targetVehicle = _selectedVehicle;
+      targetVehicle ??= VehicleService.activeVehicleNotifier.value;
 
-      if (activeVehicle == null) {
+      if (targetVehicle == null) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
@@ -127,7 +134,7 @@ class _AddRefuelBottomSheetState extends State<AddRefuelBottomSheet> {
         return;
       }
 
-      final vehicleId = activeVehicle['id'];
+      final vehicleId = targetVehicle['id'];
       final pricePerLiter = liters > 0 ? (totalPrice / liters) : 0.0;
 
       // 1. Inserir na tabela refuels do Supabase incluindo user_id e vehicle_id
@@ -143,15 +150,19 @@ class _AddRefuelBottomSheetState extends State<AddRefuelBottomSheet> {
       });
 
       // 2. Atualização Inteligente da quilometragem no veículo
-      final currentMileage = activeVehicle['mileage'] as int? ?? 0;
+      final currentMileage = targetVehicle['mileage'] as int? ?? 0;
       if (odometer > currentMileage) {
         await Supabase.instance.client
             .from('vehicles')
             .update({'mileage': odometer})
             .eq('id', vehicleId);
+
+        // Atualiza serviço local do veículo
+        VehicleService.loadVehicles(preferredVehicleId: vehicleId.toString());
       }
 
       if (mounted) {
+        JarvisAiService.clearCache();
         Navigator.pop(context);
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -183,6 +194,7 @@ class _AddRefuelBottomSheetState extends State<AddRefuelBottomSheet> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final userVehicles = VehicleService.userVehiclesNotifier.value;
 
     return Padding(
       padding: EdgeInsets.only(
@@ -231,6 +243,78 @@ class _AddRefuelBottomSheetState extends State<AddRefuelBottomSheet> {
               ],
             ),
             const SizedBox(height: 24),
+
+            // Seletor de Veículo se houver mais de 1 cadastrado
+            if (userVehicles.length > 1) ...[
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(Icons.directions_car_rounded,
+                          size: 16, color: theme.colorScheme.primary),
+                      const SizedBox(width: 6),
+                      Text(
+                        'SELECIONE O VEÍCULO',
+                        style: TextStyle(
+                          color: Colors.grey[400],
+                          fontSize: 11,
+                          fontWeight: FontWeight.bold,
+                          letterSpacing: 1.2,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF242731),
+                      borderRadius: BorderRadius.circular(16),
+                      border: Border.all(
+                        color: Colors.white.withValues(alpha: 0.08),
+                      ),
+                    ),
+                    child: DropdownButtonHideUnderline(
+                      child: DropdownButton<String>(
+                        value: _selectedVehicleId,
+                        isExpanded: true,
+                        dropdownColor: const Color(0xFF242731),
+                        style: const TextStyle(
+                            color: Colors.white, fontWeight: FontWeight.bold),
+                        items: userVehicles.map((v) {
+                          final id = v['id'].toString();
+                          final title =
+                              '${v['brand']} ${v['model']} (${v['year'] ?? ''})';
+                          return DropdownMenuItem<String>(
+                            value: id,
+                            child: Text(title),
+                          );
+                        }).toList(),
+                        onChanged: (newId) {
+                          if (newId != null) {
+                            setState(() {
+                              _selectedVehicleId = newId;
+                              final found = userVehicles.firstWhere(
+                                (v) => v['id'].toString() == newId,
+                                orElse: () => userVehicles.first,
+                              );
+                              _selectedVehicle = found;
+                              if (found['mileage'] != null) {
+                                _odometerController.text =
+                                    found['mileage'].toString();
+                              }
+                            });
+                          }
+                        },
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                ],
+              ),
+            ],
 
             // Quilometragem Atual (Apenas inteiros / formato estrito)
             TextField(

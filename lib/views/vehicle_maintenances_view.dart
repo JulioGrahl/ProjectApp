@@ -1,6 +1,24 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:projectapp/services/jarvis_ai_service.dart';
+import 'package:projectapp/services/vehicle_service.dart';
+
+class FactoryMaintenanceSuggestion {
+  final String title;
+  final int defaultIntervalKm;
+  final String explanation;
+  final String intervalText;
+  final IconData icon;
+
+  const FactoryMaintenanceSuggestion({
+    required this.title,
+    required this.defaultIntervalKm,
+    required this.explanation,
+    required this.intervalText,
+    required this.icon,
+  });
+}
 
 class VehicleMaintenancesView extends StatefulWidget {
   const VehicleMaintenancesView({super.key});
@@ -36,12 +54,18 @@ class _VehicleMaintenancesViewState extends State<VehicleMaintenancesView> {
     }
 
     try {
-      // 1. Busca veículo principal do usuário
-      final vehicleData = await Supabase.instance.client
-          .from('vehicles')
-          .select()
-          .eq('user_id', userId)
-          .maybeSingle();
+      // 1. Busca veículo principal ou ativo do usuário
+      final vehicleData = VehicleService.activeVehicleNotifier.value ??
+          (await VehicleService.loadVehicles()).firstOrNull;
+
+      final vehicleId = vehicleData?['id']?.toString();
+      if (vehicleId == null || vehicleId.isEmpty) {
+        return {
+          'vehicle': null,
+          'maintenances': <Map<String, dynamic>>[],
+          'thresholdKm': 1000,
+        };
+      }
 
       // 2. Busca preferências de alerta para saber a margem de antecedência (default: 1000 km)
       final alertPrefs = await Supabase.instance.client
@@ -53,11 +77,12 @@ class _VehicleMaintenancesViewState extends State<VehicleMaintenancesView> {
       final thresholdKm =
           (alertPrefs?['mileage_threshold_km'] as num?)?.toInt() ?? 1000;
 
-      // 3. Busca manutenções cadastradas ordenadas por quilometragem alvo
+      // 3. Busca manutenções cadastradas ESTRITAMENTE para este veículo
       final maintenancesData = await Supabase.instance.client
           .from('vehicle_maintenances')
           .select()
           .eq('user_id', userId)
+          .eq('vehicle_id', vehicleId)
           .order('target_mileage', ascending: true);
 
       return {
@@ -79,6 +104,7 @@ class _VehicleMaintenancesViewState extends State<VehicleMaintenancesView> {
           .delete()
           .eq('id', id);
 
+      JarvisAiService.clearCache();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -119,6 +145,8 @@ class _VehicleMaintenancesViewState extends State<VehicleMaintenancesView> {
       await Supabase.instance.client
           .from('vehicle_maintenances')
           .update({'is_completed': newStatus}).eq('id', id);
+
+      JarvisAiService.clearCache();
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -178,15 +206,65 @@ class _VehicleMaintenancesViewState extends State<VehicleMaintenancesView> {
 
     bool isSubmitting = false;
 
-    final quickPresets = [
-      'Troca de Óleo e Filtro',
-      'Pastilhas de Freio',
-      'Correia Dentada',
-      'Filtro de Combustível',
-      'Velas de Ignição',
-      'Alinhamento e Balanceamento',
-      'Fluido de Freio',
+    final factorySuggestions = const [
+      FactoryMaintenanceSuggestion(
+        title: 'Óleo do Motor & Filtro',
+        defaultIntervalKm: 10000,
+        explanation: 'Lubrifica e resfria as componentes internas do motor. Previne acúmulo de borra e desgaste prematuro dos pistões.',
+        intervalText: 'Recomendado a cada 10.000 km ou 12 meses',
+        icon: Icons.opacity_rounded,
+      ),
+      FactoryMaintenanceSuggestion(
+        title: 'Pastilhas de Freio',
+        defaultIntervalKm: 25000,
+        explanation: 'Garantem a fricção para a frenagem. Pastilhas desgastadas aumentam a distância de parada e riscam os discos.',
+        intervalText: 'Recomendado a cada 25.000 km ou ao notar ruídos',
+        icon: Icons.album_outlined,
+      ),
+      FactoryMaintenanceSuggestion(
+        title: 'Correia Dentada & Esticador',
+        defaultIntervalKm: 50000,
+        explanation: 'Sincroniza o virabrequim com o comando de válvulas. Seu rompimento causa colisão mecânica e retífica completa do motor.',
+        intervalText: 'Recomendado a cada 50.000 km ou 3 a 5 anos',
+        icon: Icons.settings_suggest_rounded,
+      ),
+      FactoryMaintenanceSuggestion(
+        title: 'Velas de Ignição',
+        defaultIntervalKm: 30000,
+        explanation: 'Geram a faísca ideal para a combustão. Velas gastas causam perda de potência, engasgos e consumo elevado.',
+        intervalText: 'Recomendado a cada 30.000 km',
+        icon: Icons.flash_on_rounded,
+      ),
+      FactoryMaintenanceSuggestion(
+        title: 'Fluido de Freio',
+        defaultIntervalKm: 20000,
+        explanation: 'Transmite a pressão hidráulica aos freios. Por absorver umidade (higroscópico), perde o ponto de ebulição e compromete a frenagem.',
+        intervalText: 'Recomendado a cada 20.000 km ou 2 anos',
+        icon: Icons.water_drop_rounded,
+      ),
+      FactoryMaintenanceSuggestion(
+        title: 'Filtro de Combustível',
+        defaultIntervalKm: 10000,
+        explanation: 'Retém partículas de sujeira do combustível antes dos bicos injetores, prevenindo falhas na aceleração.',
+        intervalText: 'Recomendado a cada 10.000 km',
+        icon: Icons.filter_alt_outlined,
+      ),
+      FactoryMaintenanceSuggestion(
+        title: 'Alinhamento & Balanceamento',
+        defaultIntervalKm: 10000,
+        explanation: 'Evita a deformação irregular da banda de rodagem dos pneus e elimina vibrações indesejadas na direção.',
+        intervalText: 'Recomendado a cada 10.000 km ou ao trocar pneus',
+        icon: Icons.tire_repair_rounded,
+      ),
     ];
+
+    FactoryMaintenanceSuggestion? selectedSuggestion;
+    final userVehicles = VehicleService.userVehiclesNotifier.value;
+    Map<String, dynamic>? selectedVehicle = currentVehicle ?? VehicleService.activeVehicleNotifier.value;
+    if (selectedVehicle == null && userVehicles.isNotEmpty) {
+      selectedVehicle = userVehicles.first;
+    }
+    String? selectedVehicleId = selectedVehicle?['id']?.toString();
 
     showModalBottomSheet(
       context: context,
@@ -252,7 +330,7 @@ class _VehicleMaintenancesViewState extends State<VehicleMaintenancesView> {
                     .from('vehicle_maintenances')
                     .insert({
                   'user_id': user.id,
-                  'vehicle_id': currentVehicle?['id'],
+                  'vehicle_id': selectedVehicleId ?? selectedVehicle?['id'],
                   'title': title,
                   'last_mileage': lastMileage,
                   'target_mileage': targetMileage,
@@ -359,45 +437,203 @@ class _VehicleMaintenancesViewState extends State<VehicleMaintenancesView> {
                       ),
                       const SizedBox(height: 20),
 
-                      // Atalhos de serviços rápidos
-                      Text(
-                        'Serviços Frequentes',
-                        style: TextStyle(
-                          color: Colors.grey[400],
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
+                      // Seletor de veículo se houver mais de 1 cadastrado
+                      if (userVehicles.length > 1) ...[
+                        Text(
+                          'Selecione o Veículo',
+                          style: TextStyle(
+                            color: Colors.grey[400],
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
                         ),
+                        const SizedBox(height: 8),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 16, vertical: 4),
+                          decoration: BoxDecoration(
+                            color: const Color(0xFF242731),
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(
+                                color: Colors.white.withValues(alpha: 0.08)),
+                          ),
+                          child: DropdownButtonHideUnderline(
+                            child: DropdownButton<String>(
+                              value: selectedVehicleId,
+                              isExpanded: true,
+                              dropdownColor: const Color(0xFF242731),
+                              style: const TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.bold),
+                              items: userVehicles.map((v) {
+                                return DropdownMenuItem<String>(
+                                  value: v['id'].toString(),
+                                  child: Text('${v['brand']} ${v['model']} (${v['year'] ?? ''})'),
+                                );
+                              }).toList(),
+                              onChanged: (newId) {
+                                if (newId != null) {
+                                  final found = userVehicles.firstWhere(
+                                    (v) => v['id'].toString() == newId,
+                                    orElse: () => userVehicles.first,
+                                  );
+                                  setModalState(() {
+                                    selectedVehicleId = newId;
+                                    selectedVehicle = found;
+                                    final km = (found['mileage'] as num?)?.toInt() ?? 0;
+                                    lastMileageController.text =
+                                        km > 0 ? km.toString() : '';
+                                  });
+                                }
+                              },
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 18),
+                      ],
+
+                      // Sugestões de Fábrica pré-configuradas
+                      Row(
+                        children: [
+                          Icon(
+                            Icons.lightbulb_outline_rounded,
+                            size: 16,
+                            color: primaryColor,
+                          ),
+                          const SizedBox(width: 6),
+                          Text(
+                            'Sugestões Inteligentes de Fábrica',
+                            style: TextStyle(
+                              color: Colors.grey[300],
+                              fontSize: 12,
+                              fontWeight: FontWeight.bold,
+                            ),
+                          ),
+                        ],
                       ),
                       const SizedBox(height: 8),
                       SingleChildScrollView(
                         scrollDirection: Axis.horizontal,
                         child: Row(
-                          children: quickPresets.map((preset) {
+                          children: factorySuggestions.map((suggestion) {
+                            final isSelected =
+                                selectedSuggestion?.title == suggestion.title;
                             return Padding(
                               padding: const EdgeInsets.only(right: 8.0),
                               child: ActionChip(
-                                label: Text(preset),
-                                labelStyle: const TextStyle(
-                                  fontSize: 12,
-                                  color: Colors.white,
-                                  fontWeight: FontWeight.w500,
+                                avatar: Icon(
+                                  suggestion.icon,
+                                  size: 16,
+                                  color: isSelected
+                                      ? const Color(0xFF121316)
+                                      : primaryColor,
                                 ),
-                                backgroundColor: const Color(0xFF242731),
+                                label: Text(suggestion.title),
+                                labelStyle: TextStyle(
+                                  fontSize: 12,
+                                  color: isSelected
+                                      ? const Color(0xFF121316)
+                                      : Colors.white,
+                                  fontWeight: isSelected
+                                      ? FontWeight.bold
+                                      : FontWeight.w500,
+                                ),
+                                backgroundColor: isSelected
+                                    ? primaryColor
+                                    : const Color(0xFF242731),
                                 shape: RoundedRectangleBorder(
                                   borderRadius: BorderRadius.circular(16),
                                 ),
                                 side: BorderSide(
-                                  color: Colors.white.withValues(alpha: 0.06),
+                                  color: isSelected
+                                      ? primaryColor
+                                      : Colors.white.withValues(alpha: 0.08),
                                 ),
                                 onPressed: () {
-                                  titleController.text = preset;
-                                  setModalState(() {});
+                                  titleController.text = suggestion.title;
+                                  final baseKm = int.tryParse(
+                                          lastMileageController.text.trim()) ??
+                                      currentKm;
+                                  targetMileageController.text =
+                                      (baseKm + suggestion.defaultIntervalKm)
+                                          .toString();
+                                  setModalState(() {
+                                    selectedSuggestion = suggestion;
+                                  });
                                 },
                               ),
                             );
                           }).toList(),
                         ),
                       ),
+
+                      // Explicação Educacional da Sugestão Selecionada
+                      if (selectedSuggestion != null) ...[
+                        const SizedBox(height: 12),
+                        Container(
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                            color: primaryColor.withValues(alpha: 0.08),
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(
+                              color: primaryColor.withValues(alpha: 0.3),
+                              width: 1,
+                            ),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Row(
+                                children: [
+                                  Icon(
+                                    selectedSuggestion!.icon,
+                                    size: 16,
+                                    color: primaryColor,
+                                  ),
+                                  const SizedBox(width: 8),
+                                  Text(
+                                    'POR QUE E QUANDO REVISAR?',
+                                    style: TextStyle(
+                                      color: primaryColor,
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.w900,
+                                      letterSpacing: 1.2,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                              const SizedBox(height: 6),
+                              Text(
+                                selectedSuggestion!.explanation,
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 12.5,
+                                  height: 1.4,
+                                ),
+                              ),
+                              const SizedBox(height: 6),
+                              Row(
+                                children: [
+                                  const Icon(
+                                    Icons.schedule_rounded,
+                                    size: 13,
+                                    color: Colors.grey,
+                                  ),
+                                  const SizedBox(width: 4),
+                                  Text(
+                                    selectedSuggestion!.intervalText,
+                                    style: TextStyle(
+                                      color: Colors.grey[400],
+                                      fontSize: 11,
+                                      fontWeight: FontWeight.w600,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
                       const SizedBox(height: 18),
 
                       // Campo Título do Serviço
@@ -553,7 +789,13 @@ class _VehicleMaintenancesViewState extends State<VehicleMaintenancesView> {
           },
         );
       },
-    );
+    ).whenComplete(() {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        titleController.dispose();
+        lastMileageController.dispose();
+        targetMileageController.dispose();
+      });
+    });
   }
 
   static Widget _buildIntervalChip(

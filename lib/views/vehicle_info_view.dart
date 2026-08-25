@@ -1,7 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:projectapp/services/jarvis_ai_service.dart';
+import 'package:projectapp/services/storage_service.dart';
 import 'package:projectapp/services/theme_service.dart';
+import 'package:projectapp/services/vehicle_service.dart';
 import 'package:projectapp/views/account_view.dart';
 import 'package:projectapp/views/add_refuel_view.dart';
 import 'package:projectapp/views/refuel_history_view.dart';
@@ -16,10 +20,12 @@ class VehicleInfoView extends StatefulWidget {
 class _VehicleInfoViewState extends State<VehicleInfoView> {
   final _brandController = TextEditingController();
   final _modelController = TextEditingController();
+  final _nicknameController = TextEditingController();
   final _yearController = TextEditingController();
   final _odometerController = TextEditingController();
 
   Map<String, dynamic>? currentVehicle;
+  List<Map<String, dynamic>> userVehicles = [];
   int _userStreakDays = 0;
   bool _isLoading = true;
   bool _isSubmitting = false;
@@ -27,19 +33,41 @@ class _VehicleInfoViewState extends State<VehicleInfoView> {
   @override
   void initState() {
     super.initState();
-    fetchVehicle();
+    VehicleService.activeVehicleNotifier.addListener(_onActiveVehicleChanged);
+    VehicleService.userVehiclesNotifier.addListener(_onUserVehiclesChanged);
+    fetchVehicles();
   }
 
   @override
   void dispose() {
+    VehicleService.activeVehicleNotifier.removeListener(_onActiveVehicleChanged);
+    VehicleService.userVehiclesNotifier.removeListener(_onUserVehiclesChanged);
     _brandController.dispose();
     _modelController.dispose();
+    _nicknameController.dispose();
     _yearController.dispose();
     _odometerController.dispose();
     super.dispose();
   }
 
-  Future<void> fetchVehicle() async {
+  void _onActiveVehicleChanged() {
+    if (mounted) {
+      setState(() {
+        currentVehicle = VehicleService.activeVehicleNotifier.value;
+      });
+      _fetchStreakData();
+    }
+  }
+
+  void _onUserVehiclesChanged() {
+    if (mounted) {
+      setState(() {
+        userVehicles = VehicleService.userVehiclesNotifier.value;
+      });
+    }
+  }
+
+  Future<void> fetchVehicles() async {
     final user = Supabase.instance.client.auth.currentUser;
     if (user == null) {
       if (mounted) {
@@ -51,14 +79,30 @@ class _VehicleInfoViewState extends State<VehicleInfoView> {
     }
 
     try {
-      // Busca o veículo do usuário
-      final data = await Supabase.instance.client
-          .from('vehicles')
-          .select()
-          .eq('user_id', user.id)
-          .maybeSingle();
+      final list = await VehicleService.loadVehicles();
+      if (mounted) {
+        setState(() {
+          userVehicles = list;
+          currentVehicle = VehicleService.activeVehicleNotifier.value;
+          _isLoading = false;
+        });
+      }
+      await _fetchStreakData();
+    } catch (error) {
+      debugPrint('--- ERRO AO BUSCAR GARAGEM DE VEÍCULOS: $error ---');
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+        });
+      }
+    }
+  }
 
-      // Busca a quantidade de abastecimentos para calcular a sequência (streak)
+  Future<void> _fetchStreakData() async {
+    final user = Supabase.instance.client.auth.currentUser;
+    if (user == null) return;
+
+    try {
       final refuelsCount = await Supabase.instance.client
           .from('refuels')
           .select()
@@ -68,17 +112,62 @@ class _VehicleInfoViewState extends State<VehicleInfoView> {
 
       if (mounted) {
         setState(() {
-          currentVehicle = data;
           _userStreakDays = streak;
-          _isLoading = false;
         });
       }
-    } catch (error) {
-      debugPrint('--- ERRO AO BUSCAR VEÍCULO: $error ---');
+    } catch (e) {
+      debugPrint('--- ERRO STREAK: $e ---');
+    }
+  }
+
+  Future<void> _pickAndUploadVehiclePhoto(dynamic vehicleId) async {
+    try {
+      final file = await StorageService.pickImage(ImageSource.gallery);
+      if (file == null) return;
+
       if (mounted) {
-        setState(() {
-          _isLoading = false;
-        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Row(
+              children: [
+                SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    color: Colors.white,
+                  ),
+                ),
+                SizedBox(width: 12),
+                Text('Enviando foto do veículo...'),
+              ],
+            ),
+            backgroundColor: Color(0xFF1E2028),
+          ),
+        );
+      }
+
+      final url = await StorageService.uploadVehiclePhoto(vehicleId, file);
+      if (url != null) {
+        await fetchVehicles();
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('Foto do veículo atualizada com sucesso!'),
+              backgroundColor: Colors.green,
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      debugPrint('--- ERRO UPLOAD FOTO VEÍCULO: $e ---');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Erro ao atualizar foto: $e'),
+            backgroundColor: Colors.redAccent,
+          ),
+        );
       }
     }
   }
@@ -86,6 +175,7 @@ class _VehicleInfoViewState extends State<VehicleInfoView> {
   void _clearControllers() {
     _brandController.clear();
     _modelController.clear();
+    _nicknameController.clear();
     _yearController.clear();
     _odometerController.clear();
   }
@@ -94,6 +184,7 @@ class _VehicleInfoViewState extends State<VehicleInfoView> {
       BuildContext modalContext, StateSetter setModalState) async {
     final brand = _brandController.text.trim();
     final model = _modelController.text.trim();
+    final nickname = _nicknameController.text.trim();
     final yearText = _yearController.text.trim();
     final kmText = _odometerController.text.trim();
 
@@ -101,20 +192,7 @@ class _VehicleInfoViewState extends State<VehicleInfoView> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Por favor, preencha todos os campos.'),
-            backgroundColor: Colors.redAccent,
-          ),
-        );
-      }
-      return;
-    }
-
-    final user = Supabase.instance.client.auth.currentUser;
-    if (user == null) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Usuário não autenticado. Faça login novamente.'),
+            content: Text('Por favor, preencha a marca, modelo, ano e quilometragem.'),
             backgroundColor: Colors.redAccent,
           ),
         );
@@ -129,16 +207,16 @@ class _VehicleInfoViewState extends State<VehicleInfoView> {
     try {
       final cleanYear = yearText.replaceAll(RegExp(r'[^0-9]'), '');
       final cleanKm = kmText.replaceAll(RegExp(r'[^0-9]'), '');
-      final year = int.tryParse(cleanYear) ?? 0;
       final mileage = int.tryParse(cleanKm) ?? 0;
 
-      await Supabase.instance.client.from('vehicles').insert({
-        'user_id': user.id,
-        'brand': brand,
-        'model': model,
-        'year': year,
-        'mileage': mileage,
-      });
+      await VehicleService.addVehicle(
+        brand: brand,
+        model: model,
+        year: cleanYear,
+        mileage: mileage,
+        drivetrain: 'FWD',
+        nickname: nickname,
+      );
 
       if (modalContext.mounted) {
         Navigator.pop(modalContext);
@@ -149,11 +227,11 @@ class _VehicleInfoViewState extends State<VehicleInfoView> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Veículo salvo com sucesso!'),
+            content: Text('Veículo adicionado à sua garagem com sucesso!'),
             backgroundColor: Colors.green,
           ),
         );
-        await fetchVehicle();
+        await fetchVehicles();
       }
     } catch (error) {
       if (mounted) {
@@ -208,10 +286,10 @@ class _VehicleInfoViewState extends State<VehicleInfoView> {
                     ),
                     const SizedBox(height: 24),
                     const Text(
-                      'NOVO VEÍCULO',
+                      'NOVO VEÍCULO DA GARAGEM',
                       textAlign: TextAlign.center,
                       style: TextStyle(
-                        fontSize: 20,
+                        fontSize: 18,
                         fontWeight: FontWeight.w900,
                         color: Colors.white,
                         letterSpacing: 1.5,
@@ -219,7 +297,7 @@ class _VehicleInfoViewState extends State<VehicleInfoView> {
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      'Preencha as informações do seu carro',
+                      'Cadastre outro carro para alternar contexto e telemetria',
                       textAlign: TextAlign.center,
                       style: TextStyle(
                         color: Colors.grey[400],
@@ -242,7 +320,7 @@ class _VehicleInfoViewState extends State<VehicleInfoView> {
                       textInputAction: TextInputAction.next,
                       style: const TextStyle(color: Colors.white),
                       decoration: const InputDecoration(
-                        labelText: 'Modelo (ex: 320 ou Gol)',
+                        labelText: 'Modelo (ex: 320i ou Gol)',
                         prefixIcon: Icon(Icons.directions_car_outlined),
                       ),
                     ),
@@ -273,7 +351,7 @@ class _VehicleInfoViewState extends State<VehicleInfoView> {
                     const SizedBox(height: 32),
                     ValueListenableBuilder<Color>(
                       valueListenable: ThemeService.accentColor,
-                      builder: (context, activeAccent, _) {
+                      builder: (_, activeAccent, _) {
                         return SizedBox(
                           height: 56,
                           child: ElevatedButton(
@@ -309,7 +387,7 @@ class _VehicleInfoViewState extends State<VehicleInfoView> {
                                       Icon(Icons.check_rounded,
                                           color: Colors.black),
                                       SizedBox(width: 8),
-                                      Text('SALVAR VEÍCULO'),
+                                      Text('ADICIONAR À GARAGEM'),
                                     ],
                                   ),
                           ),
@@ -330,22 +408,25 @@ class _VehicleInfoViewState extends State<VehicleInfoView> {
     if (currentVehicle == null) return;
 
     final currentDescription =
-        currentVehicle?['description'] as String? ?? 'Manca, por enquanto';
+        currentVehicle?['description'] as String? ?? 'Uso diário & alta performance';
     final currentMileage = (currentVehicle?['mileage'] as num?)?.toInt() ?? 0;
     final currentBrand = currentVehicle?['brand'] as String? ?? '';
     final currentModel = currentVehicle?['model'] as String? ?? '';
+    final currentYear = currentVehicle?['year']?.toString() ?? '';
+    final currentNickname = currentVehicle?['nickname'] as String? ?? '';
 
     final descController = TextEditingController(text: currentDescription);
     final kmController = TextEditingController(
         text: currentMileage > 0 ? currentMileage.toString() : '');
     final brandController = TextEditingController(text: currentBrand);
     final modelController = TextEditingController(text: currentModel);
+    final yearController = TextEditingController(text: currentYear);
+    final nicknameController = TextEditingController(text: currentNickname);
 
     bool isSaving = false;
 
     showModalBottomSheet(
       context: context,
-      useRootNavigator: true,
       isScrollControlled: true,
       backgroundColor: const Color(0xFF121316),
       shape: const RoundedRectangleBorder(
@@ -378,7 +459,7 @@ class _VehicleInfoViewState extends State<VehicleInfoView> {
                     ),
                     const SizedBox(height: 20),
                     const Text(
-                      'EDITAR METADADOS DO VEÍCULO',
+                      'EDITAR DADOS DO VEÍCULO',
                       style: TextStyle(
                         fontSize: 18,
                         fontWeight: FontWeight.w900,
@@ -388,10 +469,78 @@ class _VehicleInfoViewState extends State<VehicleInfoView> {
                     ),
                     const SizedBox(height: 4),
                     const Text(
-                      'Atualize a biografia, modelo e odômetro do carro',
+                      'Atualize a foto, apelido, ano, modelo e odômetro do carro',
                       style: TextStyle(fontSize: 12.5, color: Colors.grey),
                     ),
-                    const SizedBox(height: 24),
+                    const SizedBox(height: 20),
+
+                    // 1. AÇÃO DE UPLOAD/ALTERAÇÃO DE FOTO NO MODAL
+                    InkWell(
+                      onTap: () async {
+                        final vehicleId = currentVehicle!['id'];
+                        await _pickAndUploadVehiclePhoto(vehicleId);
+                        setModalState(() {});
+                      },
+                      borderRadius: BorderRadius.circular(16),
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 16, vertical: 12),
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF1B1D26),
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(
+                              color: activeAccent.withValues(alpha: 0.3)),
+                        ),
+                        child: Row(
+                          children: [
+                            Icon(Icons.camera_alt_rounded,
+                                color: activeAccent, size: 22),
+                            const SizedBox(width: 14),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  const Text(
+                                    'ALTERAR FOTO DO VEÍCULO',
+                                    style: TextStyle(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.bold,
+                                      fontSize: 13,
+                                      letterSpacing: 0.5,
+                                    ),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    'Toque para escolher uma imagem da galeria',
+                                    style: TextStyle(
+                                      color: Colors.grey[400],
+                                      fontSize: 11.5,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                            Icon(Icons.arrow_forward_ios_rounded,
+                                color: Colors.grey[600], size: 14),
+                          ],
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 18),
+
+                    // 2. APELIDO DO VEÍCULO
+                    TextField(
+                      controller: nicknameController,
+                      style: const TextStyle(color: Colors.white),
+                      decoration: const InputDecoration(
+                        labelText: 'Apelido do Veículo (ex: Goleta, Alemão)',
+                        hintText: 'ex: Goleta ou Projeto Pista',
+                        prefixIcon: Icon(Icons.badge_outlined),
+                      ),
+                    ),
+                    const SizedBox(height: 16),
+
+                    // 3. MARCA E MODELO
                     Row(
                       children: [
                         Expanded(
@@ -414,28 +563,56 @@ class _VehicleInfoViewState extends State<VehicleInfoView> {
                       ],
                     ),
                     const SizedBox(height: 16),
+
+                    // 4. ANO E QUILOMETRAGEM (KM)
+                    Row(
+                      children: [
+                        Expanded(
+                          child: TextField(
+                            controller: yearController,
+                            keyboardType: TextInputType.number,
+                            inputFormatters: [
+                              FilteringTextInputFormatter.digitsOnly
+                            ],
+                            style: const TextStyle(color: Colors.white),
+                            decoration: const InputDecoration(
+                              labelText: 'Ano (ex: 2021)',
+                              prefixIcon: Icon(Icons.calendar_today_outlined),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: TextField(
+                            controller: kmController,
+                            keyboardType: TextInputType.number,
+                            inputFormatters: [
+                              FilteringTextInputFormatter.digitsOnly
+                            ],
+                            style: const TextStyle(color: Colors.white),
+                            decoration: const InputDecoration(
+                              labelText: 'Quilometragem (KM)',
+                              prefixIcon: Icon(Icons.speed_rounded),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 16),
+
+                    // 5. DESCRIÇÃO DO CARRO
                     TextField(
                       controller: descController,
                       maxLines: 2,
                       style: const TextStyle(color: Colors.white),
                       decoration: const InputDecoration(
                         labelText: 'Descrição / Biografia do Carro',
-                        hintText: 'ex: Manca, por enquanto ou Uso diário',
+                        hintText: 'ex: Uso diário, Projeto de pista',
                         prefixIcon: Icon(Icons.notes_rounded),
                       ),
                     ),
-                    const SizedBox(height: 16),
-                    TextField(
-                      controller: kmController,
-                      keyboardType: TextInputType.number,
-                      inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                      style: const TextStyle(color: Colors.white),
-                      decoration: const InputDecoration(
-                        labelText: 'Quilometragem (KM)',
-                        prefixIcon: Icon(Icons.speed_rounded),
-                      ),
-                    ),
                     const SizedBox(height: 28),
+
                     SizedBox(
                       height: 52,
                       child: ElevatedButton(
@@ -449,28 +626,34 @@ class _VehicleInfoViewState extends State<VehicleInfoView> {
                                         currentMileage;
                                 final newBrand = brandController.text.trim();
                                 final newModel = modelController.text.trim();
+                                final newYear = yearController.text.trim();
+                                final newNickname =
+                                    nicknameController.text.trim();
+
+                                final messenger = ScaffoldMessenger.of(context);
+                                final nav = Navigator.of(sheetContext);
 
                                 try {
-                                  await Supabase.instance.client
-                                      .from('vehicles')
-                                      .update({
-                                    'description': newDesc.isEmpty
-                                        ? 'Manca, por enquanto'
-                                        : newDesc,
-                                    'mileage': newKm,
-                                    if (newBrand.isNotEmpty) 'brand': newBrand,
-                                    if (newModel.isNotEmpty) 'model': newModel,
-                                  }).eq('id', currentVehicle!['id']);
+                                  await VehicleService.updateVehicle(
+                                    vehicleId: currentVehicle!['id'].toString(),
+                                    updates: {
+                                      'nickname': newNickname,
+                                      'year': newYear,
+                                      'description': newDesc.isEmpty
+                                          ? 'Projeto de telemetria'
+                                          : newDesc,
+                                      'mileage': newKm,
+                                      if (newBrand.isNotEmpty) 'brand': newBrand,
+                                      if (newModel.isNotEmpty) 'model': newModel,
+                                    },
+                                  );
 
-                                  if (sheetContext.mounted) {
-                                    Navigator.pop(sheetContext);
-                                  }
+                                  await fetchVehicles();
 
-                                  await fetchVehicle();
+                                  nav.pop();
 
-                                  if (sheetContext.mounted) {
-                                    ScaffoldMessenger.of(sheetContext)
-                                        .showSnackBar(
+                                  if (mounted) {
+                                    messenger.showSnackBar(
                                       const SnackBar(
                                         content: Text(
                                             'Dados do veículo atualizados!'),
@@ -481,7 +664,6 @@ class _VehicleInfoViewState extends State<VehicleInfoView> {
                                 } catch (err) {
                                   debugPrint(
                                       '--- ERRO AO EDITAR VEÍCULO: $err ---');
-                                } finally {
                                   if (modalCtx.mounted) {
                                     setModalState(() => isSaving = false);
                                   }
@@ -508,11 +690,129 @@ class _VehicleInfoViewState extends State<VehicleInfoView> {
                             : const Text('SALVAR ALTERAÇÕES'),
                       ),
                     ),
+                    const SizedBox(height: 16),
+                    SizedBox(
+                      height: 48,
+                      child: OutlinedButton.icon(
+                        onPressed: isSaving
+                            ? null
+                            : () => _confirmDeleteVehicle(sheetContext, currentVehicle!),
+                        icon: const Icon(Icons.delete_outline_rounded,
+                            color: Colors.redAccent, size: 18),
+                        label: const Text(
+                          'EXCLUIR VEÍCULO',
+                          style: TextStyle(
+                            color: Colors.redAccent,
+                            fontWeight: FontWeight.w900,
+                            fontSize: 13,
+                            letterSpacing: 1.0,
+                          ),
+                        ),
+                        style: OutlinedButton.styleFrom(
+                          side: const BorderSide(color: Colors.redAccent, width: 1.2),
+                          shape: const StadiumBorder(),
+                        ),
+                      ),
+                    ),
                   ],
                 ),
               ),
             );
           },
+        );
+      },
+    ).whenComplete(() {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        descController.dispose();
+        kmController.dispose();
+        brandController.dispose();
+        modelController.dispose();
+        yearController.dispose();
+        nicknameController.dispose();
+      });
+    });
+  }
+
+  void _confirmDeleteVehicle(BuildContext sheetContext, Map<String, dynamic> vehicle) {
+    final vehicleId = vehicle['id']?.toString();
+    if (vehicleId == null) return;
+
+    final brand = vehicle['brand'] as String? ?? 'Veículo';
+    final model = vehicle['model'] as String? ?? '';
+
+    final messenger = ScaffoldMessenger.of(context);
+    final navSheet = Navigator.of(sheetContext);
+
+    showDialog(
+      context: context,
+      builder: (dialogCtx) {
+        final navDialog = Navigator.of(dialogCtx);
+        return AlertDialog(
+          backgroundColor: const Color(0xFF14161C),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20),
+            side: const BorderSide(color: Colors.redAccent, width: 1.2),
+          ),
+          title: const Row(
+            children: [
+              Icon(Icons.warning_amber_rounded, color: Colors.redAccent, size: 24),
+              SizedBox(width: 10),
+              Text(
+                'EXCLUIR VEÍCULO',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.w900,
+                  fontSize: 16,
+                  letterSpacing: 1.0,
+                ),
+              ),
+            ],
+          ),
+          content: Text(
+            'Tem certeza que deseja excluir o veículo "$brand $model"? Todos os abastecimentos e manutenções vinculados serão permanentemente removidos.',
+            style: const TextStyle(color: Colors.grey, fontSize: 13.5),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => navDialog.pop(),
+              child: const Text('CANCELAR', style: TextStyle(color: Colors.grey, fontWeight: FontWeight.bold)),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                navDialog.pop();
+                navSheet.pop();
+
+                try {
+                  await VehicleService.deleteVehicle(vehicleId);
+                  JarvisAiService.clearCache();
+                  await fetchVehicles();
+                  if (mounted) {
+                    messenger.showSnackBar(
+                      const SnackBar(
+                        content: Text('Veículo excluído com sucesso.'),
+                        backgroundColor: Colors.redAccent,
+                      ),
+                    );
+                  }
+                } catch (e) {
+                  if (mounted) {
+                    messenger.showSnackBar(
+                      SnackBar(
+                        content: Text('Erro ao excluir veículo: $e'),
+                        backgroundColor: Colors.redAccent,
+                      ),
+                    );
+                  }
+                }
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.redAccent,
+                foregroundColor: Colors.white,
+                shape: const StadiumBorder(),
+              ),
+              child: const Text('EXCLUIR', style: TextStyle(fontWeight: FontWeight.w900)),
+            ),
+          ],
         );
       },
     );
@@ -657,6 +957,175 @@ class _VehicleInfoViewState extends State<VehicleInfoView> {
         );
   }
 
+  Widget _buildMultiVehicleCarousel(
+      List<Map<String, dynamic>> vehicles, Map<String, dynamic>? active, Color activeAccent) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.garage_rounded, color: activeAccent, size: 20),
+                const SizedBox(width: 8),
+                Text(
+                  'SUA GARAGEM (${vehicles.length})',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w900,
+                    letterSpacing: 1.5,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        SizedBox(
+          height: 100,
+          child: ListView.builder(
+            scrollDirection: Axis.horizontal,
+            itemCount: vehicles.length + 1,
+            itemBuilder: (context, index) {
+              if (index == vehicles.length) {
+                return GestureDetector(
+                  onTap: () => _showAddVehicleBottomSheet(context),
+                  child: Container(
+                    width: 140,
+                    margin: const EdgeInsets.only(right: 12),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFF0F1014),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(
+                        color: Colors.white.withValues(alpha: 0.1),
+                        width: 1.5,
+                      ),
+                    ),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(Icons.add_circle_outline_rounded,
+                            color: activeAccent, size: 26),
+                        const SizedBox(height: 6),
+                        Text(
+                          '+ ADICIONAR',
+                          style: TextStyle(
+                            color: activeAccent,
+                            fontSize: 10,
+                            fontWeight: FontWeight.w900,
+                            letterSpacing: 1.0,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                );
+              }
+
+              final v = vehicles[index];
+              final isSelected = active != null &&
+                  v['id'].toString() == active['id'].toString();
+              final nick = v['nickname'] as String?;
+              final title = (nick != null && nick.trim().isNotEmpty)
+                  ? '${v['brand']} ${v['model']} (${nick.trim()})'
+                  : '${v['brand']} ${v['model']}';
+              final mileage = (v['mileage'] as num?)?.toInt() ?? 0;
+
+              return GestureDetector(
+                onTap: () {
+                  VehicleService.setActiveVehicle(v);
+                },
+                child: AnimatedContainer(
+                  duration: const Duration(milliseconds: 200),
+                  width: 175,
+                  margin: const EdgeInsets.only(right: 12),
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: isSelected
+                        ? const Color(0xFF1B1D26)
+                        : const Color(0xFF0F1014),
+                    borderRadius: BorderRadius.circular(20),
+                    border: Border.all(
+                      color: isSelected
+                          ? activeAccent
+                          : Colors.white.withValues(alpha: 0.08),
+                      width: isSelected ? 2.0 : 1.0,
+                    ),
+                    boxShadow: isSelected
+                        ? [
+                            BoxShadow(
+                              color: activeAccent.withValues(alpha: 0.2),
+                              blurRadius: 10,
+                              spreadRadius: 1,
+                            ),
+                          ]
+                        : [],
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 6, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: isSelected
+                                  ? activeAccent
+                                  : Colors.white.withValues(alpha: 0.08),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: Text(
+                              isSelected ? 'ATIVO NO APP' : '${v['year'] ?? ''}',
+                              style: TextStyle(
+                                color: isSelected
+                                    ? const Color(0xFF121316)
+                                    : Colors.grey[400],
+                                fontSize: 8.5,
+                                fontWeight: FontWeight.w900,
+                              ),
+                            ),
+                          ),
+                          Icon(
+                            Icons.directions_car_rounded,
+                            size: 16,
+                            color: isSelected ? activeAccent : Colors.grey,
+                          ),
+                        ],
+                      ),
+                      Text(
+                        title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w900,
+                        ),
+                      ),
+                      Text(
+                        '${_formatInteger(mileage)} km',
+                        style: TextStyle(
+                          color: isSelected ? activeAccent : Colors.grey[400],
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
   Widget _buildEmptyStateCard(Color activeAccent) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 24.0, vertical: 36.0),
@@ -684,14 +1153,14 @@ class _VehicleInfoViewState extends State<VehicleInfoView> {
               ],
             ),
             child: Icon(
-              Icons.directions_car_filled_rounded,
+              Icons.garage_rounded,
               size: 56,
               color: activeAccent,
             ),
           ),
           const SizedBox(height: 24),
           const Text(
-            'NENHUM VEÍCULO CADASTRADO',
+            'SUA GARAGEM ESTÁ VAZIA',
             style: TextStyle(
               fontSize: 20,
               fontWeight: FontWeight.w900,
@@ -702,7 +1171,7 @@ class _VehicleInfoViewState extends State<VehicleInfoView> {
           ),
           const SizedBox(height: 12),
           const Text(
-            'Cadastre seu carro para desbloquear a garagem First2 e telemetria inteligente.',
+            'Cadastre seu primeiro veículo para desbloquear a garagem e a telemetria preditiva do Jarvis.',
             style: TextStyle(
               color: Color(0xFF8E8E93),
               fontSize: 13,
@@ -746,13 +1215,14 @@ class _VehicleInfoViewState extends State<VehicleInfoView> {
     final avatarUrl = user?.userMetadata?['avatar_url'] as String?;
     final pilotName = (fullName != null && fullName.trim().isNotEmpty)
         ? fullName.trim().split(' ').first.toUpperCase()
-        : (user?.email != null ? user!.email!.split('@').first.toUpperCase() : 'DALCA');
+        : (user?.email != null ? user!.email!.split('@').first.toUpperCase() : 'PILOTO');
 
-    final brand = (vehicle['brand'] as String? ?? 'BMW').toUpperCase();
-    final model = (vehicle['model'] as String? ?? '320').toUpperCase();
-    final year = vehicle['year']?.toString() ?? '2000';
+    final brand = (vehicle['brand'] as String? ?? 'VEÍCULO').toUpperCase();
+    final model = (vehicle['model'] as String? ?? 'MODELO').toUpperCase();
+    final nickname = vehicle['nickname'] as String?;
+    final year = vehicle['year']?.toString() ?? '2021';
     final rawMileage = (vehicle['mileage'] as num?)?.toInt() ?? 0;
-    final description = vehicle['description'] as String? ?? 'Manca, por enquanto';
+    final description = vehicle['description'] as String? ?? 'Uso diário & telemetria ativa';
     final drivetrain = vehicle['drivetrain'] as String?; // ex: FWD, RWD, AWD, 4x4
     final photoUrl = vehicle['veiculo_foto_url'] as String?;
     final bool hasPhoto = photoUrl != null && photoUrl.trim().isNotEmpty;
@@ -760,7 +1230,13 @@ class _VehicleInfoViewState extends State<VehicleInfoView> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // 1. TOPO: ANO & ODÔMETRO, MARCA (BRANCO), MODELO (COR DO TEMA) & BADGE DE TRAÇÃO DINÂMICO
+        // Carrossel de seleção multi-veículos da garagem
+        if (userVehicles.isNotEmpty) ...[
+          _buildMultiVehicleCarousel(userVehicles, vehicle, activeAccent),
+          const SizedBox(height: 24),
+        ],
+
+        // 1. TOPO: ANO & ODÔMETRO, MARCA, MODELO, APELIDO EM DESTAQUE & BADGE DE TRAÇÃO
         Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -781,7 +1257,7 @@ class _VehicleInfoViewState extends State<VehicleInfoView> {
                   Text(
                     brand,
                     style: const TextStyle(
-                      fontSize: 34,
+                      fontSize: 32,
                       fontWeight: FontWeight.w900,
                       color: Colors.white,
                       letterSpacing: -0.5,
@@ -791,18 +1267,45 @@ class _VehicleInfoViewState extends State<VehicleInfoView> {
                   Text(
                     model,
                     style: TextStyle(
-                      fontSize: 38,
+                      fontSize: 36,
                       fontWeight: FontWeight.w900,
                       color: activeAccent,
                       letterSpacing: -0.5,
                       height: 1.05,
                     ),
                   ),
+                  if (nickname != null && nickname.trim().isNotEmpty) ...[
+                    const SizedBox(height: 6),
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: [
+                        const Text(
+                          '// CALLSIGN:',
+                          style: TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w900,
+                            color: Color(0xFF71717A),
+                            letterSpacing: 1.8,
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        Text(
+                          nickname.trim().toUpperCase(),
+                          style: const TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w900,
+                            color: Colors.white,
+                            letterSpacing: 2.8,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
                 ],
               ),
             ),
 
-            // Badge Dinâmico de Tração (Exibido Apenas Se Presente no Banco)
             if (drivetrain != null && drivetrain.trim().isNotEmpty)
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
@@ -836,7 +1339,7 @@ class _VehicleInfoViewState extends State<VehicleInfoView> {
         ),
         const SizedBox(height: 16),
 
-        // 2. VITRINE AUTOMOTIVA PADRONIZADA (ALTURA 280, BOXFIT.CONTAIN, PADDING 16PX)
+        // 2. VITRINE AUTOMOTIVA PADRONIZADA COM ÁREA DE FOTO LIMPA
         SizedBox(
           height: 280,
           width: double.infinity,
@@ -898,7 +1401,7 @@ class _VehicleInfoViewState extends State<VehicleInfoView> {
         ),
         const SizedBox(height: 16),
 
-        // 3. SEÇÃO INTEGRADAS DO PILOTO E STREAK (AVATAR, NOME & PÍLULA DE STREAK ELEGANTE)
+        // 3. SEÇÃO DO PILOTO E STREAK
         Row(
           children: [
             if (avatarUrl != null && avatarUrl.isNotEmpty)
@@ -944,7 +1447,7 @@ class _VehicleInfoViewState extends State<VehicleInfoView> {
                   const Text('🔥', style: TextStyle(fontSize: 13)),
                   const SizedBox(width: 5),
                   Text(
-                    '$_userStreakDays STREAK',
+                    'Sequência: $_userStreakDays ${_userStreakDays == 1 ? "dia" : "dias"}',
                     style: const TextStyle(
                       fontSize: 11,
                       fontWeight: FontWeight.w800,
@@ -959,9 +1462,9 @@ class _VehicleInfoViewState extends State<VehicleInfoView> {
         ),
         const SizedBox(height: 16),
 
-        // DESCRIPTION
+        // DESCRIÇÃO DO VEÍCULO
         const Text(
-          'DESCRIPTION',
+          'DESCRIÇÃO DO VEÍCULO',
           style: TextStyle(
             fontSize: 11,
             fontWeight: FontWeight.w600,
@@ -980,28 +1483,30 @@ class _VehicleInfoViewState extends State<VehicleInfoView> {
         ),
         const SizedBox(height: 24),
 
-        // 4. BARRA DE COMANDOS E AÇÕES (BOTÕES EDIT, CUSTOMIZE, DIVISOR, ABASTECER, SERVICE LOG)
-        Row(
+        // 4. AÇÕES DE GERENCIAMENTO (EDITAR, PERSONALIZAR)
+        Wrap(
+          spacing: 10,
+          runSpacing: 10,
           children: [
-            // Botão EDIT ✏️ (Abre formulário de edição de metadados do veículo)
             InkWell(
               onTap: () => _showEditVehicleModal(context, activeAccent),
               borderRadius: BorderRadius.circular(20),
               child: Container(
                 padding:
-                    const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(20),
                   border: Border.all(color: activeAccent, width: 1.2),
                 ),
                 child: Row(
+                  mainAxisSize: MainAxisSize.min,
                   children: [
                     Text(
-                      'EDIT',
+                      'EDITAR',
                       style: TextStyle(
                         color: activeAccent,
                         fontWeight: FontWeight.w900,
-                        fontSize: 13,
+                        fontSize: 12.5,
                         letterSpacing: 1.0,
                       ),
                     ),
@@ -1015,9 +1520,6 @@ class _VehicleInfoViewState extends State<VehicleInfoView> {
                 ),
               ),
             ),
-            const SizedBox(width: 14),
-
-            // Botão CUSTOMIZE 🎨 (Redireciona para Central de Personalização em AccountView)
             InkWell(
               onTap: () {
                 Navigator.push(
@@ -1025,26 +1527,27 @@ class _VehicleInfoViewState extends State<VehicleInfoView> {
                   MaterialPageRoute(
                     builder: (context) => const AccountView(),
                   ),
-                ).then((_) => fetchVehicle());
+                ).then((_) => fetchVehicles());
               },
               borderRadius: BorderRadius.circular(20),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
                 child: Row(
+                  mainAxisSize: MainAxisSize.min,
                   children: [
                     Text(
-                      'CUSTOMIZE',
+                      'PERSONALIZAR',
                       style: TextStyle(
                         color: activeAccent,
                         fontWeight: FontWeight.w900,
-                        fontSize: 13,
+                        fontSize: 12.5,
                         letterSpacing: 1.0,
                       ),
                     ),
                     const SizedBox(width: 6),
                     Icon(
                       Icons.palette_outlined,
-                      size: 16,
+                      size: 15,
                       color: activeAccent,
                     ),
                   ],
@@ -1061,7 +1564,7 @@ class _VehicleInfoViewState extends State<VehicleInfoView> {
         ),
         const SizedBox(height: 20),
 
-        // Linha 2 de Ações Rápidas Industriais (ABASTECER & SERVICE LOG)
+        // ABASTECER E HISTÓRICO
         Row(
           children: [
             Expanded(
@@ -1072,7 +1575,7 @@ class _VehicleInfoViewState extends State<VehicleInfoView> {
                     showAddRefuelBottomSheet(
                       context,
                       vehicle: currentVehicle,
-                      onRefuelSaved: fetchVehicle,
+                      onRefuelSaved: fetchVehicles,
                     );
                   },
                   icon: const Icon(
@@ -1116,12 +1619,12 @@ class _VehicleInfoViewState extends State<VehicleInfoView> {
                     size: 18,
                   ),
                   label: const Text(
-                    'SERVICE LOG',
+                    'HISTÓRICO DE SERVIÇOS',
                     style: TextStyle(
-                      fontSize: 13,
+                      fontSize: 11.5,
                       fontWeight: FontWeight.w800,
                       color: Colors.grey,
-                      letterSpacing: 0.8,
+                      letterSpacing: 0.5,
                     ),
                   ),
                   style: OutlinedButton.styleFrom(
@@ -1257,12 +1760,12 @@ class _VehicleInfoViewState extends State<VehicleInfoView> {
   Widget build(BuildContext context) {
     return ValueListenableBuilder<Color>(
       valueListenable: ThemeService.accentColor,
-      builder: (context, activeAccent, child) {
+      builder: (_, activeAccent, child) {
         return Scaffold(
           backgroundColor: const Color(0xFF000000),
           appBar: AppBar(
             title: const Text(
-              'MEU VEÍCULO',
+              'GARAGEM DE VEÍCULOS',
               style: TextStyle(
                 fontWeight: FontWeight.w900,
                 letterSpacing: 2.0,

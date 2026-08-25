@@ -25,7 +25,7 @@ class MainApp extends StatelessWidget {
 
     return ValueListenableBuilder<Color>(
       valueListenable: ThemeService.accentColor,
-      builder: (context, primaryAccent, child) {
+      builder: (_, primaryAccent, child) {
         return MaterialApp(
           title: 'Meu Carro Inteligente',
           debugShowCheckedModeBanner: false,

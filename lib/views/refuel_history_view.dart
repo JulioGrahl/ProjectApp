@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import 'package:projectapp/services/vehicle_service.dart';
+
 class RefuelHistoryView extends StatefulWidget {
   const RefuelHistoryView({super.key});
 
@@ -14,7 +16,20 @@ class _RefuelHistoryViewState extends State<RefuelHistoryView> {
   @override
   void initState() {
     super.initState();
+    VehicleService.activeVehicleNotifier.addListener(_onActiveVehicleChanged);
     _refreshHistory();
+  }
+
+  @override
+  void dispose() {
+    VehicleService.activeVehicleNotifier.removeListener(_onActiveVehicleChanged);
+    super.dispose();
+  }
+
+  void _onActiveVehicleChanged() {
+    if (mounted) {
+      _refreshHistory();
+    }
   }
 
   Future<void> _refreshHistory() async {
@@ -27,11 +42,18 @@ class _RefuelHistoryViewState extends State<RefuelHistoryView> {
     final userId = Supabase.instance.client.auth.currentUser?.id;
     if (userId == null) return [];
 
+    final activeVehicle = VehicleService.activeVehicleNotifier.value;
+    final vehicleId = activeVehicle?['id']?.toString();
+    if (vehicleId == null || vehicleId.isEmpty) {
+      return [];
+    }
+
     try {
       final response = await Supabase.instance.client
           .from('refuels')
           .select()
           .eq('user_id', userId)
+          .eq('vehicle_id', vehicleId)
           .order('created_at', ascending: false);
 
       return List<Map<String, dynamic>>.from(response);
