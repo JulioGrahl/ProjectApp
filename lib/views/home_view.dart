@@ -70,7 +70,7 @@ class _HomeViewState extends State<HomeView> {
     if (newId != _currentVehicleId) {
       _currentVehicleId = newId;
       if (mounted) {
-        _fetchDashboardData(forceRefresh: true);
+        _fetchDashboardData(forceRefresh: false);
       }
     }
   }
@@ -107,6 +107,18 @@ class _HomeViewState extends State<HomeView> {
       final vehicleData = VehicleService.activeVehicleNotifier.value;
       final vehicleId = vehicleData?['id']?.toString();
       _currentVehicleId = vehicleId;
+
+      // Se não for recarga forçada e o veículo já possuir insight persistido no banco,
+      // carrega imediatamente para a UI com zero latência e zero custo de tokens
+      final lastDbInsight = vehicleData?['jarvis_last_insight'] as String?;
+      final lastDbStatus = vehicleData?['jarvis_insight_status'] as String?;
+      if (!forceRefresh && lastDbInsight != null && lastDbInsight.trim().isNotEmpty) {
+        jarvisInsight = JarvisAiService.createResultFromDb(
+          insight: lastDbInsight,
+          status: lastDbStatus,
+        );
+        _isJarvisLoading = false;
+      }
 
       // 2. Busca preferências de alertas para saber a margem de antecedência (default: 1000 km)
       final alertPrefs = await Supabase.instance.client
@@ -168,7 +180,7 @@ class _HomeViewState extends State<HomeView> {
         });
       }
 
-      // 7. Consulta o Jarvis AI Copilot com travamento anti-duplicação
+      // 7. Consulta o Jarvis AI Copilot com avaliação orientada a eventos e persistência no Supabase
       await _fetchJarvisInsight(vehicleData, mList, forceRefresh: forceRefresh);
     } catch (error) {
       debugPrint('--- ERRO AO CARREGAR DADOS DO DASHBOARD: $error ---');
@@ -188,7 +200,7 @@ class _HomeViewState extends State<HomeView> {
     List<Map<String, dynamic>> maintenances, {
     bool forceRefresh = false,
   }) async {
-    final vehicleId = vehicle?['id']?.toString();
+    final vehicleId = vehicle?['id']?.toString() ?? '';
 
     // Trava de segurança anti-duplicação: Impede rajadas de chamadas repetidas ao Gemini
     if (_isFetchingJarvis) {
@@ -203,7 +215,21 @@ class _HomeViewState extends State<HomeView> {
 
     _isFetchingJarvis = true;
 
-    if (mounted) {
+    final lastInsight = vehicle?['jarvis_last_insight'] as String?;
+    final lastStatus = vehicle?['jarvis_insight_status'] as String?;
+
+    // Se houver insight persistido no Supabase e não for forceRefresh, exibe imediatamente
+    if (!forceRefresh && lastInsight != null && lastInsight.trim().isNotEmpty) {
+      if (mounted) {
+        setState(() {
+          jarvisInsight = JarvisAiService.createResultFromDb(
+            insight: lastInsight,
+            status: lastStatus,
+          );
+          _isJarvisLoading = false;
+        });
+      }
+    } else if (mounted) {
       setState(() {
         _isJarvisLoading = true;
       });
@@ -215,12 +241,17 @@ class _HomeViewState extends State<HomeView> {
           : 'Veículo';
       final mileage = (vehicle?['mileage'] as num?)?.toInt() ?? 0;
 
-      final insight = await JarvisAiService.generateJarvisInsight(
+      // Executa a lógica orientada a eventos (Event-Driven) com persistência no Supabase
+      final insight = await JarvisAiService.getOrGenerateJarvisInsight(
+        vehicleId: vehicleId,
         vehicleName: vehicleName,
         mileage: mileage,
         averageConsumption: averageConsumption,
         monthlyExpenses: monthlyExpenses,
+        refuelsCount: refuelsList.length,
         maintenances: maintenances,
+        lastInsight: lastInsight,
+        lastInsightStatus: lastStatus,
         forceRefresh: forceRefresh,
       );
 
@@ -1502,7 +1533,7 @@ class _HomeViewState extends State<HomeView> {
               )
             : RefreshIndicator(
                 onRefresh: () async {
-                  JarvisAiService.clearCache();
+                  await JarvisAiService.clearCache();
                   await _fetchDashboardData(forceRefresh: true);
                 },
                 color: accent,

@@ -161,8 +161,10 @@ class _AddRefuelBottomSheetState extends State<AddRefuelBottomSheet> {
         VehicleService.loadVehicles(preferredVehicleId: vehicleId.toString());
       }
 
+      // clearCache() é async — chamado ANTES do if(mounted) para evitar
+      // uso de BuildContext após gap assíncrono (use_build_context_synchronously)
+      await JarvisAiService.clearCache();
       if (mounted) {
-        JarvisAiService.clearCache();
         Navigator.pop(context);
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(

@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:google_generative_ai/google_generative_ai.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
 
 class JarvisHomeInsight {
   final String mensagemInvestigativa;
@@ -83,6 +84,17 @@ class JarvisInsightResult {
   };
 }
 
+/// Representa a avaliação do interceptador lógico de eventos do Jarvis (FinOps)
+class JarvisTriggerEvaluation {
+  final bool shouldTrigger;
+  final String? triggerReason;
+
+  const JarvisTriggerEvaluation({
+    required this.shouldTrigger,
+    this.triggerReason,
+  });
+}
+
 class JarvisAiService {
   // Modelo de produção ativo e estável da API Gemini
   static const String _modelName = 'gemini-3.6-flash';
@@ -91,8 +103,9 @@ class JarvisAiService {
   static const String _apiKey =
       String.fromEnvironment('GEMINI_API_KEY', defaultValue: '');
 
-  // Persistência de Modo do Jarvis
+  // Preferência local de tom do Jarvis
   static const String _jarvisModeKey = 'jarvis_copilot_mode';
+
   static int _currentMode = 1; // Default: Padrão (1). 0 = Silencioso, 2 = Agressivo
 
   /// Retorna o modo ativo em memória do Jarvis (0 = Silencioso, 1 = Padrão, 2 = Agressivo)
@@ -109,10 +122,10 @@ class JarvisAiService {
     return _currentMode;
   }
 
-  /// Salva o modo do Jarvis no SharedPreferences e reseta cache de insights
+  /// Salva o modo do Jarvis no SharedPreferences e reseta cache em memória
   static Future<void> setJarvisMode(int mode) async {
     _currentMode = mode;
-    clearCache();
+    await clearCache();
     try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setInt(_jarvisModeKey, mode);
@@ -121,14 +134,196 @@ class JarvisAiService {
     }
   }
 
-  // Cache em memória para o insight da Home para evitar chamadas repetidas e erro 429
+  // Cache volátil em memória RAM para transições instantâneas entre abas
   static JarvisInsightResult? _cachedHomeInsight;
   static String? _cachedVehicleId;
 
-  /// Limpa o cache em memória (utilizado em Pull to Refresh ou recarga forçada)
-  static void clearCache() {
+  /// Limpa o cache volátil em memória RAM
+  static Future<void> clearCache({String? vehicleId}) async {
     _cachedHomeInsight = null;
     _cachedVehicleId = null;
+  }
+
+  /// Cria um JarvisInsightResult a partir dos dados persistidos no Supabase (colunas jarvis_last_insight e jarvis_insight_status)
+  static JarvisInsightResult createResultFromDb({
+    required String insight,
+    String? status,
+  }) {
+    final cleanStatus = (status ?? 'normal').trim().toLowerCase();
+    String alertLevel = 'normal';
+    if (cleanStatus == 'alert' || cleanStatus == 'critico' || cleanStatus == 'negative') {
+      alertLevel = 'critico';
+    } else if (cleanStatus == 'atencao' || cleanStatus == 'warning') {
+      alertLevel = 'atencao';
+    }
+
+    String diagnostico = 'Telemetria em monitoramento ativo.';
+    if (alertLevel == 'critico') {
+      diagnostico = 'Alerta crítico de revisão.';
+    } else if (alertLevel == 'atencao') {
+      diagnostico = 'Atenção aos prazos de revisão.';
+    } else if (cleanStatus == 'positive') {
+      diagnostico = 'Sistema operacional normal.';
+    }
+
+    return JarvisInsightResult(
+      homeInsight: JarvisHomeInsight(
+        mensagemInvestigativa: insight,
+        textoBotaoAcao: 'Ver Alertas Críticos',
+        rotaAcaoSugerida: 'maintenance_form',
+        nivelAlerta: alertLevel,
+      ),
+      modalStatus: JarvisModalStatus(
+        diagnosticoCurto: diagnostico,
+      ),
+    );
+  }
+
+  /// Avaliador lógico determinístico (FinOps para LLMs).
+  /// Avalia se houve eventos ou variações de telemetria que justifiquem acionar a API do Gemini.
+  static Future<JarvisTriggerEvaluation> shouldTriggerJarvisInsight({
+    required String vehicleId,
+    required int currentMileage,
+    required double? currentConsumption,
+    required int currentRefuelsCount,
+    required List<Map<String, dynamic>> maintenances,
+    String? lastInsight,
+    String? lastInsightStatus,
+    bool forceRefresh = false,
+  }) async {
+    // 0. Recarga manual solicitada pelo usuário (Pull to refresh)
+    if (forceRefresh) {
+      return const JarvisTriggerEvaluation(
+        shouldTrigger: true,
+        triggerReason: 'Recarga forçada solicitada manualmente pelo usuário.',
+      );
+    }
+
+    if (vehicleId.isEmpty) {
+      return const JarvisTriggerEvaluation(
+        shouldTrigger: false,
+        triggerReason: 'Nenhum veículo ativo selecionado.',
+      );
+    }
+
+    // 1. Ausência de insight prévio no Supabase (Primeiro login / veículo sem insight)
+    if (lastInsight == null || lastInsight.trim().isEmpty) {
+      return const JarvisTriggerEvaluation(
+        shouldTrigger: true,
+        triggerReason: 'Primeira análise de telemetria (sem insight no banco de dados).',
+      );
+    }
+
+    // 2. GATILHO DE REVISÕES: Odômetro atingiu 90% ou ultrapassou a meta de manutenção pendente
+    final pendingMaintenances = maintenances
+        .where((m) => !(m['is_completed'] as bool? ?? false))
+        .toList();
+
+    for (final m in pendingMaintenances) {
+      final title = m['title'] ?? 'Revisão';
+      final targetMileage = (m['target_mileage'] as num?)?.toInt() ?? 0;
+
+      if (targetMileage > 0) {
+        final ninetyPercent = (targetMileage * 0.90).floor();
+
+        if (currentMileage >= ninetyPercent) {
+          final isAlreadyAlert = lastInsightStatus == 'alert' ||
+              lastInsightStatus == 'critico' ||
+              lastInsightStatus == 'atencao';
+
+          if (!isAlreadyAlert) {
+            final remaining = targetMileage - currentMileage;
+            return JarvisTriggerEvaluation(
+              shouldTrigger: true,
+              triggerReason: currentMileage >= targetMileage
+                  ? 'Manutenção $title atingiu a meta de $targetMileage km.'
+                  : 'Odômetro atingiu 90%+ da meta de $title (faltam $remaining km).',
+            );
+          }
+        }
+      }
+    }
+
+    // 3. Telemetria estável e sem eventos críticos: reutiliza o insight persistido no Supabase
+    return const JarvisTriggerEvaluation(
+      shouldTrigger: false,
+      triggerReason: 'Telemetria estável. Reutilizando insight persistido no banco de dados.',
+    );
+  }
+
+  /// Ponto de entrada de alto nível para a Home:
+  /// Avalia gatilhos com lógica local antes de decidir chamar o Gemini.
+  static Future<JarvisInsightResult> getOrGenerateJarvisInsight({
+    required String vehicleId,
+    required String vehicleName,
+    required int mileage,
+    required double? averageConsumption,
+    required double monthlyExpenses,
+    required int refuelsCount,
+    List<Map<String, dynamic>> maintenances = const [],
+    String? lastInsight,
+    String? lastInsightStatus,
+    bool forceRefresh = false,
+  }) async {
+    // 1. Interceptador lógico determinístico
+    final evaluation = await shouldTriggerJarvisInsight(
+      vehicleId: vehicleId,
+      currentMileage: mileage,
+      currentConsumption: averageConsumption,
+      currentRefuelsCount: refuelsCount,
+      maintenances: maintenances,
+      lastInsight: lastInsight,
+      lastInsightStatus: lastInsightStatus,
+      forceRefresh: forceRefresh,
+    );
+
+    debugPrint(
+        '--- [FINOPS JARVIS GATE] shouldTrigger: ${evaluation.shouldTrigger} | Razão: ${evaluation.triggerReason} ---');
+
+    // 2. Se NÃO houver gatilho e houver insight prévio no Supabase, reutiliza imediatamente com 0 tokens
+    if (!evaluation.shouldTrigger && lastInsight != null && lastInsight.trim().isNotEmpty) {
+      final dbResult = createResultFromDb(
+        insight: lastInsight,
+        status: lastInsightStatus,
+      );
+      _cachedHomeInsight = dbResult;
+      _cachedVehicleId = vehicleName;
+      return dbResult;
+    }
+
+    // 3. Se houver gatilho (ou falta de insight no banco), executa a geração via Gemini
+    final result = await generateJarvisInsight(
+      vehicleName: vehicleName,
+      mileage: mileage,
+      averageConsumption: averageConsumption,
+      monthlyExpenses: monthlyExpenses,
+      maintenances: maintenances,
+      forceRefresh: forceRefresh,
+      triggerReason: evaluation.triggerReason,
+    );
+
+    // 4. Salva o novo insight no Supabase na tabela de veículos (jarvis_last_insight e jarvis_insight_status)
+    if (vehicleId.isNotEmpty) {
+      try {
+        final insightText = result.homeInsight.mensagemInvestigativa;
+        final statusText = result.homeInsight.nivelAlerta;
+
+        await Supabase.instance.client
+            .from('vehicles')
+            .update({
+              'jarvis_last_insight': insightText,
+              'jarvis_insight_status': statusText,
+              'updated_at': DateTime.now().toIso8601String(),
+            })
+            .eq('id', vehicleId);
+
+        debugPrint('--- [SUPABASE SYNC] Insight do Jarvis persistido com sucesso para o veículo $vehicleId ---');
+      } catch (e) {
+        debugPrint('--- ERRO AO SALVAR INSIGHT DO JARVIS NO SUPABASE: $e ---');
+      }
+    }
+
+    return result;
   }
 
   /// Retorna a diretiva de personalização e conduta do system prompt baseando-se no modo ativo
@@ -264,6 +459,7 @@ DIRETRIZES OBRIGATÓRIAS DE COMPORTAMENTO:
     required double monthlyExpenses,
     List<Map<String, dynamic>> maintenances = const [],
     bool forceRefresh = false,
+    String? triggerReason,
   }) async {
     // 1. Trava de Cache em Memória: evita chamadas repetidas e protege a cota da API (429)
     if (!forceRefresh && _cachedHomeInsight != null && _cachedVehicleId == vehicleName) {
@@ -288,7 +484,8 @@ DIRETRIZES OBRIGATÓRIAS DE COMPORTAMENTO:
 
     try {
       final modeDirective = _getModePromptDirective(_currentMode);
-      final maxTokens = _currentMode == 0 ? 120 : (_currentMode == 2 ? 1000 : 500);
+      // Margem mínima de 350 tokens no Silencioso para garantir fechamento correto do JSON
+      final maxTokens = _currentMode == 0 ? 350 : (_currentMode == 2 ? 1000 : 500);
 
       final systemInstruction = Content.system('''
 Você é o Jarvis, um engenheiro mecânico automotivo de elite e copiloto inteligente do motorista.
@@ -303,27 +500,18 @@ DIRETRIZES FUNDAMENTAIS DO SISTEMA:
 - Se NÃO houver registro no banco para um componente crítico, avalie a quilometragem atual do odômetro em relação aos marcos de fábrica do modelo ($vehicleName). Exemplo: 50.000 - 60.000 km exige atenção para correia dentada, velas de ignição e fluido de freio.
 - Se houver manutenções futuras cadastradas e nenhuma estiver vencida ou próxima, assuma o papel de MONITORAMENTO ATIVO, confirmando que o cronograma está sob controle.
 
-2. NÍVEIS DE ALERTA (nivel_alerta):
-- "critico": Alguma manutenção ativa ultrapassou a quilometragem limite.
-- "atencao": Alguma manutenção ativa está próxima da quilometragem limite (dentro da margem de antecedência) OU a quilometragem atual atingiu um marco de fábrica sem registro de troca no banco.
-- "normal": Todas as manutenções cadastradas estão em dia e não há alertas urgentes de fábrica.
-
-3. PRECISÃO MECÂNICA E TOM CONSULTOR:
+2. PRECISÃO MECÂNICA E TOM CONSULTOR:
 - Avalie apenas componentes que de fato existam no motor/modelo do veículo ($vehicleName).
-- Seja didático, claro e direto ao ponto. Foque em prevenção de prejuízos e segurança.
+- Seja didático, claro e direto ao ponto. Foque em prevenção de prejuízos e segurança (máximo 2 frases objetivas no campo insight).
 
-4. FORMATO DE RESPOSTA (JSON ESTRITO):
+3. FORMATO DE RESPOSTA (JSON NATIVO OBRIGATÓRIO):
+Retorne exclusivamente um objeto JSON neste formato:
 {
-  "home_insight": {
-    "mensagem_investigativa": "Texto preditivo para a Home (máx 2 frases, focado na telemetria real/marcos de fábrica).",
-    "texto_botao_acao": "Texto do botão (ex: 'Ver Alertas Críticos' ou 'Gerenciar Cronograma')",
-    "rota_acao_sugerida": "maintenance_form",
-    "nivel_alerta": "normal" | "atencao" | "critico"
-  },
-  "modal_status": {
-    "diagnostico_curto": "Diagnóstico ultra-curto de status (máx 8 palavras)."
-  }
+  "insight": "sua mensagem preditiva aqui (máx 2 frases, focada na telemetria real e marcos mecânicos)",
+  "status": "positive" | "neutral" | "negative" | "alert"
 }
+
+⚠️ DIRETIVA DE FORMATO INEGOCIÁVEL: Você deve responder ESTRITA e EXCLUSIVAMENTE com o objeto JSON acima. Nunca inclua textos introdutórios, saudações, explicações externas ao JSON ou blocos de formatação markdown como ```json. A primeira e última caractere da sua resposta devem ser, respectivamente, '{' e '}'.
 ''');
 
       final model = GenerativeModel(
@@ -350,16 +538,20 @@ DIRETRIZES FUNDAMENTAIS DO SISTEMA:
               return '- $title (Última: $last km, Meta: $target km, Status: $completed)';
             }).join('\n');
 
+      final triggerContext = (triggerReason != null && triggerReason.isNotEmpty)
+          ? '\n- GATILHO RECENTE DETECTADO PELA TELEMETRIA: $triggerReason\n'
+          : '';
+
       final prompt = '''
 DADOS REAIS DO VEÍCULO:
 - Veículo: $vehicleName
 - Quilometragem Atual: $mileage km
 - Consumo Médio: $consumptionStr
 - Gastos no Mês Atual: R\$ ${monthlyExpenses.toStringAsFixed(2)}
-- Histórico e Agendamentos no Banco de Dados:
+$triggerContext- Histórico e Agendamentos no Banco de Dados:
 $maintenancesSummary
 
-Analise os dados aplicando a lógica híbrida preditiva (última execução real vs marcos de fábrica) e retorne o JSON com o nível de alerta correspondente.
+Analise os dados aplicando a lógica híbrida preditiva (última execução real vs marcos de fábrica) e retorne o JSON com o insight e o status ("positive", "neutral", "negative" ou "alert").
 ''';
 
       final response = await model.generateContent([
@@ -399,22 +591,50 @@ Analise os dados aplicando a lógica híbrida preditiva (última execução real
     return fallback;
   }
 
-  /// Realiza o parse robusto do JSON retornado pelo Gemini, limpando eventuais marcações markdown.
+  /// Sanitiza e faz o parse robusto do JSON retornado pelo Gemini.
+  ///
+  /// Aplica múltiplas camadas de limpeza antes de decodificar para blindar contra:
+  /// - Blocos de markdown (```json ... ```) em qualquer posição da string
+  /// - Texto introdutório antes do objeto JSON
+  /// - Respostas truncadas por limite de tokens
+  /// - Aspas não escapadas causando SyntaxError no jsonDecode
   static JarvisInsightResult? _parseJsonInsight(String rawText) {
-    try {
-      String cleanText = rawText.trim();
-      if (cleanText.startsWith('```json')) {
-        cleanText = cleanText.substring(7);
-      } else if (cleanText.startsWith('```')) {
-        cleanText = cleanText.substring(3);
-      }
-      if (cleanText.endsWith('```')) {
-        cleanText = cleanText.substring(0, cleanText.length - 3);
-      }
-      cleanText = cleanText.trim();
+    // ── ETAPA 1: Sanitização Global (Limpeza de String) ──────────────────────
+    // Usa replaceAll global para remover TODOS os blocos de markdown, mesmo que
+    // estejam embutidos no meio da resposta (não apenas no início/fim).
+    String cleanText = rawText
+        .replaceAll(RegExp(r'```json', caseSensitive: false), '')
+        .replaceAll(RegExp(r'```'), '')
+        .trim();
 
+    // ── ETAPA 2: Extração Cirúrgica do Objeto JSON ────────────────────────────
+    // Localiza o primeiro '{' e o último '}' para isolar o objeto JSON
+    // independentemente de qualquer texto introdutório ou de encerramento da IA.
+    final firstBrace = cleanText.indexOf('{');
+    final lastBrace = cleanText.lastIndexOf('}');
+
+    if (firstBrace != -1 && lastBrace != -1 && lastBrace > firstBrace) {
+      cleanText = cleanText.substring(firstBrace, lastBrace + 1);
+    }
+
+    // ── ETAPA 3: Decodificação com Try/Catch e Fallback Gracioso ─────────────
+    try {
       final dynamic decoded = jsonDecode(cleanText);
       if (decoded is Map<String, dynamic>) {
+        // Formato Direto Obrigatório: { "insight": "...", "status": "positive/neutral/negative/alert" }
+        if (decoded.containsKey('insight')) {
+          final insightText = decoded['insight']?.toString().trim() ?? '';
+          final rawStatus = decoded['status']?.toString().trim().toLowerCase() ?? 'normal';
+
+          if (insightText.isNotEmpty) {
+            return createResultFromDb(
+              insight: insightText,
+              status: rawStatus,
+            );
+          }
+        }
+
+        // Formato Estruturado Alternativo: { "home_insight": { ... }, "modal_status": { ... } }
         final homeMap = decoded['home_insight'] as Map<String, dynamic>?;
         final modalMap = decoded['modal_status'] as Map<String, dynamic>?;
 
@@ -442,7 +662,11 @@ Analise os dados aplicando a lógica híbrida preditiva (última execução real
         }
       }
     } catch (error) {
-      debugPrint('--- ERRO AO FAZER PARSE DO JSON DO GEMINI: $error ---');
+      // ── DEBUG: Loga o erro e o payload bruto que causou a falha ──────────
+      debugPrint('--- [JARVIS PARSE ERROR] FormatException ao decodificar JSON do Gemini ---');
+      debugPrint('--- Erro: $error ---');
+      debugPrint('--- Payload falho (cleanText): $cleanText ---');
+      // NÃO propaga o erro para a UI: retorna null para acionar o fallback local gracioso.
     }
     return null;
   }

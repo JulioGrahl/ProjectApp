@@ -129,22 +129,11 @@ class _JarvisChatViewState extends State<JarvisChatView> {
       final vehicleName = vehicleData != null
           ? '${vehicleData['brand']} ${vehicleData['model']}'
           : 'Veículo';
-      final mileage = (vehicleData?['mileage'] as num?)?.toInt() ?? 0;
 
-      // Cria a sessão de chat contextualizada com o Gemini
-      _chatSession = JarvisAiService.createChatSession(
-        vehicleName: vehicleName,
-        mileage: mileage,
-        averageConsumption: _averageConsumption,
-        monthlyExpenses: _monthlyExpenses,
-        maintenances: _maintenances,
-      );
-
-      // Mensagem de boas-vindas inicial do Jarvis (Limpa o histórico anterior para evitar mensagens duplicadas)
-      final kmFormatted = mileage > 0 ? '$mileage km' : 'sem km informada';
+      // Mensagem de boas-vindas inicial estática e determinística (Custo ZERO de tokens na inicialização)
       final welcomeText = vehicleData != null
-          ? 'Olá! Sou o **Jarvis**, seu copiloto mecânico de elite. Estou conectado à telemetria do seu **$vehicleName** ($kmFormatted). Como posso te ajudar hoje?'
-          : 'Olá! Sou o **Jarvis**, seu copiloto automotivo. Cadastre seu veículo para que eu possa monitorar a telemetria e auxiliar você em tempo real!';
+          ? 'Olá, piloto! Sou o Jarvis, operando a telemetria do seu $vehicleName. O sistema está verde. Como posso te auxiliar hoje?'
+          : 'Olá, piloto! Sou o Jarvis, operando a telemetria do seu veículo. O sistema está verde. Como posso te auxiliar hoje?';
 
       _messages.clear();
       _messages.add(
@@ -155,7 +144,7 @@ class _JarvisChatViewState extends State<JarvisChatView> {
         ),
       );
     } catch (e) {
-      debugPrint('--- ERRO AO INICIALIZAR CHAT JARVIS: $e ---');
+      debugPrint('--- ERRO AO CARREGAR TELEMETRIA DO VEÍCULO NO CHAT: $e ---');
     } finally {
       _isInitializing = false;
       if (mounted) {
@@ -235,6 +224,22 @@ class _JarvisChatViewState extends State<JarvisChatView> {
     });
 
     _scrollToBottom();
+
+    // Inicialização sob demanda (Lazy) da sessão do chat com o Gemini apenas ao enviar mensagem
+    if (_chatSession == null) {
+      final vehicleName = _vehicle != null
+          ? '${_vehicle!['brand']} ${_vehicle!['model']}'
+          : 'Veículo';
+      final mileage = (_vehicle?['mileage'] as num?)?.toInt() ?? 0;
+
+      _chatSession = JarvisAiService.createChatSession(
+        vehicleName: vehicleName,
+        mileage: mileage,
+        averageConsumption: _averageConsumption,
+        monthlyExpenses: _monthlyExpenses,
+        maintenances: _maintenances,
+      );
+    }
 
     // Se o chat session não estiver disponível (ex: sem API key ou offline), usa fallback local
     if (_chatSession == null) {
@@ -361,6 +366,7 @@ class _JarvisChatViewState extends State<JarvisChatView> {
   }
 
   void _restartChat() {
+    _chatSession = null;
     setState(() {
       _messages.clear();
       _loadVehicleAndInitChat();

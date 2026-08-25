@@ -104,7 +104,7 @@ class _VehicleMaintenancesViewState extends State<VehicleMaintenancesView> {
           .delete()
           .eq('id', id);
 
-      JarvisAiService.clearCache();
+      await JarvisAiService.clearCache();
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -146,7 +146,7 @@ class _VehicleMaintenancesViewState extends State<VehicleMaintenancesView> {
           .from('vehicle_maintenances')
           .update({'is_completed': newStatus}).eq('id', id);
 
-      JarvisAiService.clearCache();
+      await JarvisAiService.clearCache();
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(

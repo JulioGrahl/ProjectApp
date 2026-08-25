@@ -9,6 +9,8 @@ class Vehicle {
   final String? nickname;
   final String? description;
   final String? veiculoFotoUrl;
+  final String? jarvisLastInsight;
+  final String? jarvisInsightStatus;
   final DateTime? createdAt;
   final DateTime? updatedAt;
 
@@ -23,6 +25,8 @@ class Vehicle {
     this.nickname,
     this.description,
     this.veiculoFotoUrl,
+    this.jarvisLastInsight,
+    this.jarvisInsightStatus,
     this.createdAt,
     this.updatedAt,
   });
@@ -40,6 +44,8 @@ class Vehicle {
       nickname: map['nickname'] as String?,
       description: map['description'] as String?,
       veiculoFotoUrl: map['veiculo_foto_url'] as String?,
+      jarvisLastInsight: map['jarvis_last_insight'] as String?,
+      jarvisInsightStatus: map['jarvis_insight_status'] as String?,
       createdAt: map['created_at'] != null
           ? DateTime.tryParse(map['created_at'].toString())
           : null,
@@ -62,6 +68,8 @@ class Vehicle {
       if (nickname != null) 'nickname': nickname,
       if (description != null) 'description': description,
       if (veiculoFotoUrl != null) 'veiculo_foto_url': veiculoFotoUrl,
+      if (jarvisLastInsight != null) 'jarvis_last_insight': jarvisLastInsight,
+      if (jarvisInsightStatus != null) 'jarvis_insight_status': jarvisInsightStatus,
     };
   }
 
@@ -77,6 +85,8 @@ class Vehicle {
     String? nickname,
     String? description,
     String? veiculoFotoUrl,
+    String? jarvisLastInsight,
+    String? jarvisInsightStatus,
     DateTime? createdAt,
     DateTime? updatedAt,
   }) {
@@ -91,6 +101,8 @@ class Vehicle {
       nickname: nickname ?? this.nickname,
       description: description ?? this.description,
       veiculoFotoUrl: veiculoFotoUrl ?? this.veiculoFotoUrl,
+      jarvisLastInsight: jarvisLastInsight ?? this.jarvisLastInsight,
+      jarvisInsightStatus: jarvisInsightStatus ?? this.jarvisInsightStatus,
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
     );

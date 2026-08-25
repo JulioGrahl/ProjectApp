@@ -784,7 +784,7 @@ class _VehicleInfoViewState extends State<VehicleInfoView> {
 
                 try {
                   await VehicleService.deleteVehicle(vehicleId);
-                  JarvisAiService.clearCache();
+                  await JarvisAiService.clearCache();
                   await fetchVehicles();
                   if (mounted) {
                     messenger.showSnackBar(
